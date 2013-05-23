@@ -21,6 +21,8 @@ if USE_NCMPI_AIORI
 ior_SOURCES += aiori-NCMPI.c
 ior_LDADD += -lpnetcdf
 endif
+ior_SOURCES += aiori-DAOS.c
+ior_LDADD += -ldaos_posix
 
 IOR_SOURCES = $(ior_SOURCES)
 IOR_LDADD = $(ior_LDADD)

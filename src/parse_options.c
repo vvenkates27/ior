@@ -192,6 +192,8 @@ void DecodeDirective(char *line, IOR_param_t *params)
 		RecalculateExpectedFileSize(params);
         } else if (strcasecmp(option, "transfersize") == 0) {
                 params->transferSize = StringToBytes(value);
+        } else if (strcasecmp(option, "aiospertransfer") == 0) {
+                params->aiosPerTransfer = atoi(value);
         } else if (strcasecmp(option, "setalignment") == 0) {
                 params->setAlignment = StringToBytes(value);
         } else if (strcasecmp(option, "singlexferattempt") == 0) {
@@ -405,7 +407,7 @@ IOR_test_t *ReadConfigScript(char *scriptName)
 IOR_test_t *ParseCommandLine(int argc, char **argv)
 {
         static const char *opts =
-          "a:A:b:BcCd:D:eEf:FgG:hHi:Ij:J:kKlmM:nN:o:O:pPqQ:rRs:St:T:uU:vVwWxX:YzZ";
+          "a:A:b:BcCd:D:eEf:FgG:hHi:Ij:J:kKlmM:nN:o:O:pPqQ:rRs:St:T:uU:vVwWxX:y:YzZ";
         int c, i;
         static IOR_test_t *tests = NULL;
 
@@ -570,6 +572,9 @@ IOR_test_t *ParseCommandLine(int argc, char **argv)
                         break;
                 case 'x':
                         initialTestParams.singleXferAttempt = TRUE;
+                        break;
+                case 'y':
+                        initialTestParams.aiosPerTransfer = atoi(optarg);
                         break;
                 case 'z':
                         initialTestParams.randomOffset = TRUE;

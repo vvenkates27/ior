@@ -119,6 +119,9 @@ typedef struct
     /* NCMPI variables */
     int var_id;                      /* variable id handle for data set */
 
+    /* DAOS variables */
+    int aiosPerTransfer;             /* number of async I/Os per transfer */
+
     /* Lustre variables */
     int lustre_stripe_count;
     int lustre_stripe_size;
