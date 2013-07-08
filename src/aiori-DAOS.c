@@ -16,7 +16,10 @@
 #include "config.h"
 #endif
 
+#include <stdint.h>
 #include <assert.h>
+#include <unistd.h>
+#include <sys/types.h>
 #include <daos_api.h>
 
 #include "ior.h"
@@ -55,14 +58,14 @@ struct fileDescriptor {
         daos_epoch_t  epoch;
 };
 
-static daos_handle_t eventQueue;
-static daos_event_t *events;
-static daos_iod_t   *iods;
-static daos_mmd_t   *mmds;
-static int           nEvents;
-static unsigned int *targets;
-static int           nTargets;
-static int           initialized;
+static daos_handle_t      eventQueue;
+static struct daos_event *events;
+static struct daos_iod   *iods;
+static struct daos_mmd   *mmds;
+static int                nEvents;
+static unsigned int      *targets;
+static int                nTargets;
+static int                initialized;
 
 /***************************** F U N C T I O N S ******************************/
 
@@ -81,48 +84,59 @@ do {                                                                    \
 
 static void SysInfoInit(void)
 {
-        daos_handle_t   sysContainer;
-        daos_location_t loc;
-        daos_loc_key_t *lks;
-        unsigned int    lkn;
-        unsigned int   *t;
-        int             i;
-        int             rc;
+        daos_handle_t        sysContainer;
+        struct daos_location loc;
+        struct daos_loc_key *lks;
+        unsigned int         lkn;
+        int                  i;
+        int                  rc;
 
-        rc = daos_sys_open(getenv("DAOS_POSIX"), &sysContainer,
-                                  NULL /* synchronous */);
-        DCHECK(rc, "Failed to open system container");
+        if (rank == 0) {
+                rc = daos_sys_open(getenv("DAOS_POSIX"), &sysContainer,
+                                          NULL /* synchronous */);
+                DCHECK(rc, "Failed to open system container");
 
-        loc.lc_cage = DAOS_LOC_UNKNOWN;
-        rc = daos_sys_query(sysContainer, &loc, 0 /* whole tree */, &lkn,
-                            NULL /* size query */, NULL /* synchronous */);
-        DCHECK(rc, "Failed to get size of location keys");
+                loc.lc_cage = DAOS_LOC_UNKNOWN;
+                rc = daos_sys_query(sysContainer, &loc, 0 /* whole tree */,
+                                    &lkn, NULL /* size query */,
+                                    NULL /* synchronous */);
+                DCHECK(rc, "Failed to get size of location keys");
 
-        lks = malloc((sizeof *lks) * lkn);
-        if (lks == NULL)
-                ERR("Failed to allocate location keys");
+                lks = malloc((sizeof *lks) * lkn);
+                if (lks == NULL)
+                        ERR("Failed to allocate location keys");
 
-        rc = daos_sys_query(sysContainer, &loc, 0 /* whole tree */, &lkn, lks,
-                            NULL /* synchronous */);
-        DCHECK(rc, "Failed to get location keys");
+                rc = daos_sys_query(sysContainer, &loc, 0 /* whole tree */,
+                                    &lkn, lks, NULL /* synchronous */);
+                DCHECK(rc, "Failed to get location keys");
 
-        for (i = 0; i < lkn; i++)
-                if (lks[i].lk_type == DAOS_LOC_TYP_TARGET)
-                        nTargets++;
+                nTargets = 0;
+                for (i = 0; i < lkn; i++)
+                        if (lks[i].lk_type == DAOS_LOC_TYP_TARGET)
+                                nTargets++;
+        }
+
+        MPI_Bcast(&nTargets, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
         targets = malloc((sizeof *targets) * nTargets);
         if (targets == NULL)
                 ERR("Failed to allocate target array");
 
-        t = targets;
-        for (i = 0; i < lkn; i++)
-                if (lks[i].lk_type == DAOS_LOC_TYP_TARGET)
-                        *t++ = lks[i].lk_id;
+        if (rank == 0) {
+                unsigned int   *t;
 
-        free(lks);
+                t = targets;
+                for (i = 0; i < lkn; i++)
+                        if (lks[i].lk_type == DAOS_LOC_TYP_TARGET)
+                                *t++ = lks[i].lk_id;
 
-        rc = daos_sys_close(sysContainer, NULL /* synchronous */);
-        DCHECK(rc, "Failed to get location keys");
+                free(lks);
+
+                rc = daos_sys_close(sysContainer, NULL /* synchronous */);
+                DCHECK(rc, "Failed to get location keys");
+        }
+
+        MPI_Bcast(targets, nTargets, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
 }
 
 static SysInfoFini(void)
@@ -158,42 +172,32 @@ static void Fini(void)
 static void ShardAdd(daos_handle_t container, daos_epoch_t *epoch,
                      IOR_param_t *param)
 {
-        unsigned int *shardTargets;
-        int           rc;
-        int           i;
+        epoch->seq++;
 
-        epoch->ep_eid.ep_seq++;
+        if (rank == 0) {
+                int i;
+                int rc;
 
-        if (rank != 0)
-                return;
+                rc = daos_shard_add(container, *epoch, nTargets, targets,
+                                    NULL /* ? */, NULL /* synchronous */);
+                DCHECK(rc, "Failed to create shards");
 
-        shardTargets = malloc((sizeof *shardTargets) * param->numTasks);
-        if (shardTargets == NULL)
-                ERR("Failed to allocate target array for shard creation");
-
-        for (i = 0; i < param->numTasks; i++)
-                shardTargets[i] = targets[i % nTargets];
-
-        rc = daos_shard_add(container, *epoch, param->numTasks, shardTargets,
-                            NULL /* ? */, NULL /* synchronous */);
-        DCHECK(rc, "Failed to create shards");
-
-        free(shardTargets);
-
-        rc = daos_epoch_commit(epoch->ep_scope, epoch->ep_eid, 1 /* sync */,
-                               NULL, NULL /* synchronous */);
-        DCHECK(rc, "Failed to commit shard creation");
+                rc = daos_epoch_commit(container, *epoch, 1 /* sync */, NULL,
+                                       NULL /* synchronous */);
+                DCHECK(rc, "Failed to commit shard creation");
+        }
 }
 
 static void ContainerOpen(char *testFileName, IOR_param_t *param,
                           daos_handle_t *container, daos_epoch_t *epoch)
 {
         unsigned char *buffer;
-        unsigned int   sizes[2];
+        unsigned int   size;
         int            rc;
 
         if (rank == 0) {
-                unsigned int dMode;
+                struct daos_epoch_info info;
+                unsigned int           dMode;
 
                 if (param->open == WRITE)
                         dMode = DAOS_COO_RW | DAOS_COO_CREATE;
@@ -201,13 +205,15 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                         dMode = DAOS_COO_RO;
 
                 rc = daos_container_open(testFileName, dMode, param->numTasks,
-                                         container, NULL /* synchronous */);
+                                         NULL /* ignore status */, container,
+                                         NULL /* synchronous */);
                 DCHECK(rc, "Failed to open container %s", testFileName);
 
-                rc = daos_epoch_scope_open(*container, &epoch->ep_eid,
-                                           &epoch->ep_scope,
-                                           NULL /* synchronous */);
-                DCHECK(rc, "Failed to open epoch scope for container");
+                rc = daos_epoch_query(*container, &info,
+                                      NULL /* synchronous */);
+                DCHECK(rc, "Failed to get epoch info from %s", testFileName);
+
+                *epoch = info.epi_hce;
         }
 
         if (param->open == WRITE)
@@ -217,54 +223,33 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                 return;
 
         if (rank == 0) {
-                rc = daos_local2global(*container, NULL, &sizes[0]);
+                rc = daos_local2global(*container, NULL, &size);
                 DCHECK(rc, "Failed to get global container handle size");
-
-                rc = daos_local2global(epoch->ep_scope, NULL, &sizes[1]);
-                DCHECK(rc, "Failed to get global epoch scope handle size");
         }
 
-        MPI_CHECK(MPI_Bcast(sizes, 2, MPI_INT, 0, param->testComm),
+        MPI_CHECK(MPI_Bcast(&size, 1, MPI_UNSIGNED, 0, param->testComm),
                   "Failed to broadcast size");
 
-        /*
-         * The buffer will store
-         *
-         *   1. the global container handle,
-         *   2. the global epoch scope handle, and
-         *   3. the HCE.
-         */
-        buffer = malloc(sizes[0] + sizes[1] + sizeof epoch->ep_eid);
+        buffer = malloc(size + sizeof epoch->seq);
         if (buffer == NULL)
                 ERR("Failed to allocate message buffer");
 
         if (rank == 0) {
-                rc = daos_local2global(*container, buffer, &sizes[0]);
+                rc = daos_local2global(*container, buffer, &size);
                 DCHECK(rc, "Failed to get global container handle");
 
-                rc = daos_local2global(epoch->ep_scope, buffer + sizes[0],
-                                       &sizes[1]);
-                DCHECK(rc, "Failed to get global epoch scope handle");
-
-                memmove(buffer + sizes[0] + sizes[1], &epoch->ep_eid,
-                        sizeof epoch->ep_eid);
+                memmove(buffer + size, &epoch->seq, sizeof epoch->seq);
         }
 
-        MPI_CHECK(MPI_Bcast(buffer, sizes[0] + sizes[1] + sizeof epoch->ep_eid,
-                            MPI_BYTE, 0, param->testComm),
-                  "Failed to broadcast message");
+        MPI_CHECK(MPI_Bcast(buffer, size + sizeof epoch->seq, MPI_BYTE, 0,
+                            param->testComm), "Failed to broadcast message");
 
         if (rank != 0) {
-                rc = daos_global2local(buffer, sizes[0], container,
+                rc = daos_global2local(buffer, size, container,
                                        NULL /* sychronous */);
                 DCHECK(rc, "Failed to get local container handle");
 
-                rc = daos_global2local(buffer + sizes[0], sizes[1],
-                                       &epoch->ep_scope, NULL /* sychronous */);
-                DCHECK(rc, "Failed to get local epoch scope handle");
-
-                memmove(&epoch->ep_eid, buffer + sizes[0] + sizes[1],
-                       sizeof epoch->ep_eid);
+                memmove(&epoch->seq, buffer + size, sizeof epoch->seq);
         }
 }
 
@@ -272,9 +257,6 @@ static void ContainerClose(daos_handle_t container, daos_epoch_t *epoch,
                            IOR_param_t *param)
 {
         int rc;
-
-        rc = daos_epoch_scope_close(epoch->ep_scope, 0, NULL /* synchronous */);
-        DCHECK(rc, "Failed to close epoch scope");
 
         rc = daos_container_close(container, NULL /* synchronous */);
         DCHECK(rc, "Failed to close container");
@@ -287,14 +269,18 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
         unsigned int  mode;
         int           rc;
 
-        oid.o_id_hi = rank;
-        oid.o_id_lo = 0;
+        oid.o_id_hi = rank % nTargets;
+        oid.o_id_lo = rank / nTargets;
 
         mode = DAOS_OBJ_IO_SEQ;
         if (param->open == WRITE)
-                mode |= DAOS_OBJ_RW;
+                mode |= DAOS_OBJ_RW | DAOS_OBJ_EXCL;
         else
                 mode |= DAOS_OBJ_RO;
+
+        if (param->verbose > VERBOSE_2)
+                printf("process %d opening object <%llu, %llu> with mode %x\n",
+                       rank, oid.o_id_hi, oid.o_id_lo, mode);
 
         rc = daos_object_open(container, oid, mode, object,
                               NULL /* synchronous */);
@@ -361,7 +347,7 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
                 /*
                  * All write operations form a single transaction.
                  */
-                fd->epoch.ep_eid.ep_seq++;
+                fd->epoch.seq++;
 
         ObjectOpen(fd->container, &fd->object, &fd->epoch, param);
 
@@ -374,8 +360,8 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
                               IOR_offset_t length, IOR_param_t *param)
 {
         struct fileDescriptor *fd = file;
-        daos_event_t           parent;
-        daos_event_t          *event;
+        struct daos_event      parent;
+        struct daos_event     *event;
         daos_off_t             offset;
         daos_size_t            ioSize;
         int                    i;
@@ -435,7 +421,7 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         if (event != &parent)
                 ERR("Unexpected event");
 
-        DCHECK(event->ev_status, "Failed to transfer");
+        DCHECK(event->ev_error, "Failed to transfer");
 
         for (i = 0; i < nEvents; i++)
                 daos_event_fini(&events[i]);
@@ -459,9 +445,9 @@ static void DAOS_Close(void *file, IOR_param_t *param)
                           "Failed to synchronize processes");
 
                 if (rank == 0) {
-                        rc = daos_epoch_commit(fd->epoch.ep_scope,
-                                               fd->epoch.ep_eid, 1 /* sync */,
-                                               NULL, NULL /* synchronous */);
+                        rc = daos_epoch_commit(fd->container, fd->epoch,
+                                               1 /* sync */, NULL,
+                                               NULL /* synchronous */);
                         DCHECK(rc, "Failed to commit object write");
                 }
         }
@@ -470,12 +456,10 @@ static void DAOS_Close(void *file, IOR_param_t *param)
 
         free(fd);
 
-#if 0
         if (initialized) {
                 Fini();
                 initialized = 0;
         }
-#endif
 }
 
 static void DAOS_Delete(char *testFileName, IOR_param_t *param)
