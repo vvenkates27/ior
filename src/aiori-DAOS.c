@@ -58,11 +58,17 @@ struct fileDescriptor {
         daos_epoch_t  epoch;
 };
 
+struct aio {
+        struct daos_iod         a_iod;
+        struct daos_io_frag     a_io_frag;
+        struct daos_mmd         a_mmd;
+        struct daos_mm_frag     a_mm_frag;
+        struct daos_event       a_event;
+};
+
 static daos_handle_t      eventQueue;
-static struct daos_event *events;
-static struct daos_iod   *iods;
-static struct daos_mmd   *mmds;
-static int                nEvents;
+static struct aio        *aios;
+static int                nAios;
 static unsigned int      *targets;
 static int                nTargets;
 static int                initialized;
@@ -297,26 +303,16 @@ static void ObjectClose(daos_handle_t object)
 
 static AIOInit(IOR_param_t *param)
 {
-        nEvents = param->aiosPerTransfer;
+        nAios = param->aiosPerTransfer;
 
-        events = malloc((sizeof *events) * nEvents);
-        if (events == NULL)
-                ERR("Failed to allocate event array");
-
-        iods = malloc(((sizeof *iods) + (sizeof iods->iod_frag[0])) * nEvents);
-        if (iods == NULL)
-                ERR("Failed to allocate iod array");
-
-        mmds = malloc(((sizeof *mmds) + (sizeof mmds->mmd_frag[0])) * nEvents);
-        if (mmds == NULL)
-                ERR("Failed to allocate mmd array");
+        aios = malloc((sizeof *aios) * nAios);
+        if (aios == NULL)
+                ERR("Failed to allocate aio array");
 }
 
 static AIOFini(void)
 {
-        free(mmds);
-        free(iods);
-        free(events);
+        free(aios);
 }
 
 static void *DAOS_Create(char *testFileName, IOR_param_t *param)
@@ -367,7 +363,7 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         int                    i;
         int                    rc;
 
-        assert(nEvents == param->aiosPerTransfer);
+        assert(nAios == param->aiosPerTransfer);
 
         /*
          * This assumes "rankOffset == 0 && segmentCount == 1 && length %
@@ -383,30 +379,33 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         rc = daos_event_init(&parent, eventQueue, NULL /* orphan */);
         DCHECK(rc, "Failed to initialize parent event");
 
-        for (i = 0; i < nEvents; i++) {
-                rc = daos_event_init(&events[i], eventQueue, &parent);
+        for (i = 0; i < nAios; i++) {
+                rc = daos_event_init(&aios[i].a_event, eventQueue, &parent);
                 DCHECK(rc, "Failed to initialize child event");
         }
 
         for (i = 0; i < param->aiosPerTransfer; i++) {
-                iods[i].iod_nfrag = 1;
+                aios[i].a_iod.iod_nfrag = 1;
                 /*
                  * This assumes "rankOffset == 0 && segmentCount == 1".
                  */
-                iods[i].iod_frag[0].if_offset = offset + ioSize * i;
-                iods[i].iod_frag[0].if_nob = ioSize;
+                aios[i].a_iod.iod_frag[0].if_offset = offset + ioSize * i;
+                aios[i].a_iod.iod_frag[0].if_nob = ioSize;
 
-                mmds[i].mmd_nfrag = 1;
-                mmds[i].mmd_frag[0].mf_addr = (char *) buffer + ioSize * i;
-                mmds[i].mmd_frag[0].mf_nob = ioSize;
+                aios[i].a_mmd.mmd_nfrag = 1;
+                aios[i].a_mmd.mmd_frag[0].mf_addr = (char *) buffer +
+                                                    ioSize * i;
+                aios[i].a_mmd.mmd_frag[0].mf_nob = ioSize;
 
                 if (access == WRITE) {
-                        rc = daos_object_write(fd->object, fd->epoch, &mmds[i],
-                                               &iods[i], &events[i]);
+                        rc = daos_object_write(fd->object, fd->epoch,
+                                               &aios[i].a_mmd, &aios[i].a_iod,
+                                               &aios[i].a_event);
                         DCHECK(rc, "Failed to start write operation");
                 } else {
-                        rc = daos_object_read(fd->object, fd->epoch, &mmds[i],
-                                              &iods[i], &events[i]);
+                        rc = daos_object_read(fd->object, fd->epoch,
+                                              &aios[i].a_mmd, &aios[i].a_iod,
+                                              &aios[i].a_event);
                         DCHECK(rc, "Failed to start read operation");
                 }
         }
@@ -423,8 +422,8 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
 
         DCHECK(event->ev_error, "Failed to transfer");
 
-        for (i = 0; i < nEvents; i++)
-                daos_event_fini(&events[i]);
+        for (i = 0; i < nAios; i++)
+                daos_event_fini(&aios[i].a_event);
 
         daos_event_fini(&parent);
 
