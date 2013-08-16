@@ -20,7 +20,9 @@
 #include <assert.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <daos_api.h>
+#include <libgen.h>
+#include <stdbool.h>
+#include <daos/daos_api.h>
 
 #include "ior.h"
 #include "aiori.h"
@@ -88,7 +90,21 @@ do {                                                                    \
         }                                                               \
 } while (0);
 
-static void SysInfoInit(void)
+static char *
+path_get_dir(const char *path)
+{
+        char *p;
+        char *d;
+
+        p = strdup(path);
+        if (p == NULL)
+                return NULL;
+        d = strdup(dirname(p));
+        free(p);
+        return d;
+}
+
+static void SysInfoInit(const char *path)
 {
         daos_handle_t        sysContainer;
         struct daos_location loc;
@@ -98,8 +114,10 @@ static void SysInfoInit(void)
         int                  rc;
 
         if (rank == 0) {
-                rc = daos_sys_open(getenv("DAOS_POSIX"), &sysContainer,
-                                          NULL /* synchronous */);
+#ifdef HAVE_DAOS_POSIX
+                path = getenv("DAOS_POSIX");
+#endif
+                rc = daos_sys_open(path, &sysContainer, NULL /* synchronous */);
                 DCHECK(rc, "Failed to open system container");
 
                 loc.lc_cage = DAOS_LOC_UNKNOWN;
@@ -154,25 +172,25 @@ static void Init(void)
 {
         int rc;
 
+#ifdef HAVE_DAOS_POSIX
         rc = daos_posix_init();
         DCHECK(rc, "Failed to initialize daos-posix");
+#endif
 
 	rc = daos_eq_create(&eventQueue);
         DCHECK(rc, "Failed to create event queue");
-
-        SysInfoInit();
 }
 
 static void Fini(void)
 {
         int rc;
 
-        SysInfoFini();
-
 	rc = daos_eq_destroy(eventQueue);
         DCHECK(rc, "Failed to destroy event queue");
 
+#ifdef HAVE_DAOS_POSIX
         daos_posix_finalize();
+#endif
 }
 
 static void ShardAdd(daos_handle_t container, daos_epoch_t *epoch,
@@ -323,11 +341,20 @@ static void *DAOS_Create(char *testFileName, IOR_param_t *param)
 static void *DAOS_Open(char *testFileName, IOR_param_t *param)
 {
         struct fileDescriptor *fd;
+        char                  *dir;
 
         if (!initialized) {
                 Init();
                 initialized = 1;
         }
+
+        dir = path_get_dir(testFileName);
+        if (dir == NULL)
+                ERR("Failed to get path directory");
+
+        SysInfoInit(dir);
+
+        free(dir);
 
         fd = malloc(sizeof *fd);
         if (fd == NULL)
@@ -454,6 +481,8 @@ static void DAOS_Close(void *file, IOR_param_t *param)
         ContainerClose(fd->container, &fd->epoch, param);
 
         free(fd);
+
+        SysInfoFini();
 
         if (initialized) {
                 Fini();
