@@ -163,7 +163,7 @@ static void SysInfoInit(const char *path)
         MPI_Bcast(targets, nTargets, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
 }
 
-static SysInfoFini(void)
+static void SysInfoFini(void)
 {
         free(targets);
 }
@@ -199,7 +199,6 @@ static void ShardAdd(daos_handle_t container, daos_epoch_t *epoch,
         epoch->seq++;
 
         if (rank == 0) {
-                int i;
                 int rc;
 
                 rc = daos_shard_add(container, *epoch, nTargets, targets,
@@ -319,7 +318,7 @@ static void ObjectClose(daos_handle_t object)
         DCHECK(rc, "Failed to close object");
 }
 
-static AIOInit(IOR_param_t *param)
+static void AIOInit(IOR_param_t *param)
 {
         nAios = param->aiosPerTransfer;
 
@@ -328,7 +327,7 @@ static AIOInit(IOR_param_t *param)
                 ERR("Failed to allocate aio array");
 }
 
-static AIOFini(void)
+static void AIOFini(void)
 {
         free(aios);
 }
