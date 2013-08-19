@@ -136,6 +136,8 @@ typedef struct
 
     int id;                          /* test's unique ID */
     int intraTestBarriers;           /* barriers between open/op and op/close */
+    int daos_n_shards;
+    int daos_n_targets;
 } IOR_param_t;
 
 /* each pointer is to an array, each of length equal to the number of

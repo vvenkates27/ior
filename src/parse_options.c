@@ -280,6 +280,10 @@ void DecodeDirective(char *line, IOR_param_t *params)
 		RecalculateExpectedFileSize(params);
         } else if (strcasecmp(option, "summaryalways") == 0) {
                 params->summary_every_test = atoi(value);
+        } else if (strcasecmp(option, "daosshards") == 0) {
+                params->daos_n_shards = atoi(value);
+        } else if (strcasecmp(option, "daostargets") == 0) {
+                params->daos_n_targets = atoi(value);
         } else {
                 if (rank == 0)
                         fprintf(stdout, "Unrecognized parameter \"%s\"\n",

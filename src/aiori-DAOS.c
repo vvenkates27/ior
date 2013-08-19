@@ -104,6 +104,12 @@ path_get_dir(const char *path)
         return d;
 }
 
+static int
+target_compare(const void *a, const void *b)
+{
+        return (*(const unsigned int *) a) - (*(const unsigned int *) b);
+}
+
 static void SysInfoInit(const char *path)
 {
         daos_handle_t        sysContainer;
@@ -134,6 +140,9 @@ static void SysInfoInit(const char *path)
                                     &lkn, lks, NULL /* synchronous */);
                 DCHECK(rc, "Failed to get location keys");
 
+                rc = daos_sys_close(sysContainer, NULL /* synchronous */);
+                DCHECK(rc, "Failed to get location keys");
+
                 nTargets = 0;
                 for (i = 0; i < lkn; i++)
                         if (lks[i].lk_type == DAOS_LOC_TYP_TARGET)
@@ -156,8 +165,7 @@ static void SysInfoInit(const char *path)
 
                 free(lks);
 
-                rc = daos_sys_close(sysContainer, NULL /* synchronous */);
-                DCHECK(rc, "Failed to get location keys");
+                qsort(targets, nTargets, sizeof *targets, target_compare);
         }
 
         MPI_Bcast(targets, nTargets, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
@@ -196,18 +204,31 @@ static void Fini(void)
 static void ShardAdd(daos_handle_t container, daos_epoch_t *epoch,
                      IOR_param_t *param)
 {
-        epoch->seq++;
-
         if (rank == 0) {
-                int rc;
+                unsigned int *s;
+                unsigned int *t;
+                int           i;
+                int           rc;
 
-                rc = daos_shard_add(container, *epoch, nTargets, targets,
-                                    NULL /* ? */, NULL /* synchronous */);
+                s = malloc((sizeof *s) * param->daos_n_shards);
+                if (s == NULL)
+                        ERR("Failed to allocate shard array");
+
+                t = malloc((sizeof *t) * param->daos_n_shards);
+                if (t == NULL)
+                        ERR("Failed to allocate target array");
+
+                for (i = 0; i < param->daos_n_shards; i++) {
+                        s[i] = i;
+                        t[i] = targets[i % param->daos_n_targets];
+                }
+
+                rc = daos_shard_add(container, *epoch, param->daos_n_shards,
+                                    t, s, NULL /* synchronous */);
                 DCHECK(rc, "Failed to create shards");
 
-                rc = daos_epoch_commit(container, *epoch, 1 /* sync */, NULL,
-                                       NULL /* synchronous */);
-                DCHECK(rc, "Failed to commit shard creation");
+                free(t);
+                free(s);
         }
 }
 
@@ -239,8 +260,17 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                 *epoch = info.epi_hce;
         }
 
-        if (param->open == WRITE)
+        if (param->open == WRITE) {
+                epoch->seq++;
+
                 ShardAdd(*container, epoch, param);
+
+                if (rank == 0) {
+                        rc = daos_epoch_commit(*container, *epoch, 1 /* sync */,
+                                               NULL, NULL /* synchronous */);
+                        DCHECK(rc, "Failed to commit shard creation");
+                }
+        }
 
         if (param->numTasks == 1)
                 return;
@@ -292,8 +322,8 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
         unsigned int  mode;
         int           rc;
 
-        oid.o_id_hi = rank % nTargets;
-        oid.o_id_lo = rank / nTargets;
+        oid.o_id_hi = rank % param->daos_n_shards;
+        oid.o_id_lo = rank / param->daos_n_shards;
 
         mode = DAOS_OBJ_IO_SEQ;
         if (param->open == WRITE)
@@ -352,6 +382,14 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
                 ERR("Failed to get path directory");
 
         SysInfoInit(dir);
+
+        if (param->daos_n_targets == -1)
+                param->daos_n_targets = nTargets;
+        else if (param->daos_n_targets > nTargets)
+                ERR("'daosntargets' must <= the number of all targets");
+
+        if (param->daos_n_shards == -1)
+                param->daos_n_shards = param->daos_n_targets;
 
         free(dir);
 
