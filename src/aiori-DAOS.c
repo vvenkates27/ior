@@ -27,6 +27,7 @@
 #include "ior.h"
 #include "aiori.h"
 #include "iordef.h"
+#include "list.h"
 
 /**************************** P R O T O T Y P E S *****************************/
 
@@ -61,6 +62,7 @@ struct fileDescriptor {
 };
 
 struct aio {
+        cfs_list_t              a_list;
         struct daos_iod         a_iod;
         struct daos_io_frag     a_io_frag;
         struct daos_mmd         a_mmd;
@@ -68,12 +70,14 @@ struct aio {
         struct daos_event       a_event;
 };
 
-static daos_handle_t      eventQueue;
-static struct aio        *aios;
-static int                nAios;
-static unsigned int      *targets;
-static int                nTargets;
-static int                initialized;
+static daos_handle_t       eventQueue;
+static struct daos_event **events;
+static int                 nAios;
+static unsigned int       *targets;
+static int                 nTargets;
+static int                 initialized;
+
+static CFS_LIST_HEAD(aios);
 
 /***************************** F U N C T I O N S ******************************/
 
@@ -326,10 +330,13 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
         oid.o_id_lo = rank / param->daos_n_shards;
 
         mode = DAOS_OBJ_IO_SEQ;
-        if (param->open == WRITE)
-                mode |= DAOS_OBJ_RW | DAOS_OBJ_EXCL;
-        else
+        if (param->open == WRITE) {
+                mode |= DAOS_OBJ_RW;
+                if (!param->useO_DIRECT)
+                        mode |= DAOS_OBJ_EXCL;
+        } else {
                 mode |= DAOS_OBJ_RO;
+        }
 
         if (param->verbose > VERBOSE_2)
                 printf("process %d opening object <%llu, %llu> with mode %x\n",
@@ -350,16 +357,40 @@ static void ObjectClose(daos_handle_t object)
 
 static void AIOInit(IOR_param_t *param)
 {
-        nAios = param->aiosPerTransfer;
+        struct aio *aio;
+        int         i;
+        int         rc;
 
-        aios = malloc((sizeof *aios) * nAios);
-        if (aios == NULL)
-                ERR("Failed to allocate aio array");
+        for (i = 0; i < param->daos_n_aios; i++) {
+                aio = malloc(sizeof *aio);
+                if (aio == NULL)
+                        ERR("Failed to allocate aio array");
+
+                rc = daos_event_init(&aio->a_event, eventQueue,
+                                     NULL /* orphan */);
+                DCHECK(rc, "Failed to initialize event for aio[%d]", i);
+
+                cfs_list_add(&aio->a_list, &aios);
+        }
+
+        nAios = param->daos_n_aios;
+
+        events = malloc((sizeof *events) * param->daos_n_aios);
+        if (events == NULL)
+                ERR("Failed to allocate events array");
 }
 
 static void AIOFini(void)
 {
-        free(aios);
+        struct aio *aio;
+        struct aio *tmp;
+
+        free(events);
+
+        cfs_list_for_each_entry_safe(aio, tmp, &aios, a_list) {
+                daos_event_fini(&aio->a_event);
+                cfs_list_del_init(&aio->a_list);
+        }
 }
 
 static void *DAOS_Create(char *testFileName, IOR_param_t *param)
@@ -416,18 +447,42 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
         return fd;
 }
 
+static void DAOS_Wait(IOR_param_t *param)
+{
+        struct aio *aio;
+        int         i;
+        int         rc;
+
+        rc = daos_eq_poll(eventQueue, 0, DAOS_EQ_WAIT, param->daos_n_aios,
+                          events);
+        DCHECK(rc, "Failed to poll event queue");
+        assert(rc <= param->daos_n_aios - nAios);
+
+        for (i = 0; i < rc; i++) {
+                aio = (struct aio *)
+                      ((char *) events[i] -
+                       (char *) (&((struct aio *) 0)->a_event));
+
+                DCHECK(aio->a_event.ev_error, "Failed to transfer (%lu, %lu)",
+                       aio->a_iod.iod_frag[0].if_offset,
+                       aio->a_iod.iod_frag[0].if_nob);
+
+                cfs_list_move(&aio->a_list, &aios);
+                nAios++;
+        }
+
+        if (param->verbose > VERBOSE_2)
+                printf("process %d found %d completed AIOs (%d free %d busy)\n",
+                       rank, rc, nAios, param->daos_n_aios - nAios);
+}
+
 static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
                               IOR_offset_t length, IOR_param_t *param)
 {
         struct fileDescriptor *fd = file;
-        struct daos_event      parent;
-        struct daos_event     *event;
+        struct aio            *aio;
         daos_off_t             offset;
-        daos_size_t            ioSize;
-        int                    i;
         int                    rc;
-
-        assert(nAios == param->aiosPerTransfer);
 
         /*
          * This assumes "rankOffset == 0 && segmentCount == 1 && length %
@@ -438,58 +493,48 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         assert(param->reorderTasks == 0);
         assert(param->reorderTasksRandom == 0);
         offset = param->offset - rank * param->blockSize;
-        ioSize = length / param->aiosPerTransfer;
 
-        rc = daos_event_init(&parent, eventQueue, NULL /* orphan */);
-        DCHECK(rc, "Failed to initialize parent event");
+        /*
+         * Find an available AIO descriptor.  If none, wait for one.
+         */
+        if (nAios == 0)
+                DAOS_Wait(param);
+        aio = cfs_list_entry(aios.next, struct aio, a_list);
+        cfs_list_move_tail(&aio->a_list, &aios);
+        nAios--;
 
-        for (i = 0; i < nAios; i++) {
-                rc = daos_event_init(&aios[i].a_event, eventQueue, &parent);
-                DCHECK(rc, "Failed to initialize child event");
+        if (param->verbose > VERBOSE_2)
+                printf("process %d starting an AIO (%d free %d busy)\n", rank,
+                       nAios, param->daos_n_aios - nAios);
+
+        aio->a_iod.iod_nfrag = 1;
+        /*
+         * This assumes "rankOffset == 0 && segmentCount == 1".
+         */
+        aio->a_iod.iod_frag[0].if_offset = offset;
+        aio->a_iod.iod_frag[0].if_nob = length;
+        aio->a_mmd.mmd_nfrag = 1;
+        aio->a_mmd.mmd_frag[0].mf_addr = buffer;
+        aio->a_mmd.mmd_frag[0].mf_nob = length;
+
+        if (access == WRITE) {
+                rc = daos_object_write(fd->object, fd->epoch,
+                                       &aio->a_mmd, &aio->a_iod,
+                                       &aio->a_event);
+                DCHECK(rc, "Failed to start write operation");
+        } else {
+                rc = daos_object_read(fd->object, fd->epoch,
+                                      &aio->a_mmd, &aio->a_iod,
+                                      &aio->a_event);
+                DCHECK(rc, "Failed to start read operation");
         }
 
-        for (i = 0; i < param->aiosPerTransfer; i++) {
-                aios[i].a_iod.iod_nfrag = 1;
+        if (access == WRITECHECK || access == READCHECK)
                 /*
-                 * This assumes "rankOffset == 0 && segmentCount == 1".
+                 * We are expected to fill data into the buffer before
+                 * returning.
                  */
-                aios[i].a_iod.iod_frag[0].if_offset = offset + ioSize * i;
-                aios[i].a_iod.iod_frag[0].if_nob = ioSize;
-
-                aios[i].a_mmd.mmd_nfrag = 1;
-                aios[i].a_mmd.mmd_frag[0].mf_addr = (char *) buffer +
-                                                    ioSize * i;
-                aios[i].a_mmd.mmd_frag[0].mf_nob = ioSize;
-
-                if (access == WRITE) {
-                        rc = daos_object_write(fd->object, fd->epoch,
-                                               &aios[i].a_mmd, &aios[i].a_iod,
-                                               &aios[i].a_event);
-                        DCHECK(rc, "Failed to start write operation");
-                } else {
-                        rc = daos_object_read(fd->object, fd->epoch,
-                                              &aios[i].a_mmd, &aios[i].a_iod,
-                                              &aios[i].a_event);
-                        DCHECK(rc, "Failed to start read operation");
-                }
-        }
-
-        rc = daos_eq_poll(eventQueue, 1 /* only if has inflight */,
-                          DAOS_EQ_WAIT, 1 /* only 1 event pointer*/, &event);
-        DCHECK(rc, "Failed to poll event queue");
-
-        if (rc != 1)
-                DCHECK(EINVAL, "Unexpected number of events: %d", rc);
-
-        if (event != &parent)
-                ERR("Unexpected event");
-
-        DCHECK(event->ev_error, "Failed to transfer");
-
-        for (i = 0; i < nAios; i++)
-                daos_event_fini(&aios[i].a_event);
-
-        daos_event_fini(&parent);
+                DAOS_Wait(param);
 
         return length;
 }
@@ -499,11 +544,24 @@ static void DAOS_Close(void *file, IOR_param_t *param)
         struct fileDescriptor *fd = file;
         int                    rc;
 
+        /*
+         * Wait for all AIOs to finish.
+         */
+        while (param->daos_n_aios - nAios > 0)
+                DAOS_Wait(param);
+
         AIOFini();
 
         ObjectClose(fd->object);
 
         if (param->open == WRITE) {
+                if (!param->useO_DIRECT) {
+                        rc = daos_shard_flush(fd->container, fd->epoch,
+                                              rank % param->daos_n_shards,
+                                              NULL);
+                        DCHECK(rc, "Failed to close object");
+                }
+
                 MPI_CHECK(MPI_Barrier(param->testComm),
                           "Failed to synchronize processes");
 

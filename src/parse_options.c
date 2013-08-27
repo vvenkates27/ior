@@ -192,8 +192,6 @@ void DecodeDirective(char *line, IOR_param_t *params)
 		RecalculateExpectedFileSize(params);
         } else if (strcasecmp(option, "transfersize") == 0) {
                 params->transferSize = StringToBytes(value);
-        } else if (strcasecmp(option, "aiospertransfer") == 0) {
-                params->aiosPerTransfer = atoi(value);
         } else if (strcasecmp(option, "setalignment") == 0) {
                 params->setAlignment = StringToBytes(value);
         } else if (strcasecmp(option, "singlexferattempt") == 0) {
@@ -284,6 +282,8 @@ void DecodeDirective(char *line, IOR_param_t *params)
                 params->daos_n_shards = atoi(value);
         } else if (strcasecmp(option, "daostargets") == 0) {
                 params->daos_n_targets = atoi(value);
+        } else if (strcasecmp(option, "daosaios") == 0) {
+                params->daos_n_aios = atoi(value);
         } else {
                 if (rank == 0)
                         fprintf(stdout, "Unrecognized parameter \"%s\"\n",
@@ -411,7 +411,7 @@ IOR_test_t *ReadConfigScript(char *scriptName)
 IOR_test_t *ParseCommandLine(int argc, char **argv)
 {
         static const char *opts =
-          "a:A:b:BcCd:D:eEf:FgG:hHi:Ij:J:kKlmM:nN:o:O:pPqQ:rRs:St:T:uU:vVwWxX:y:YzZ";
+          "a:A:b:BcCd:D:eEf:FgG:hHi:Ij:J:kKlmM:nN:o:O:pPqQ:rRs:St:T:uU:vVwWxX:YzZ";
         int c, i;
         static IOR_test_t *tests = NULL;
 
@@ -576,9 +576,6 @@ IOR_test_t *ParseCommandLine(int argc, char **argv)
                         break;
                 case 'x':
                         initialTestParams.singleXferAttempt = TRUE;
-                        break;
-                case 'y':
-                        initialTestParams.aiosPerTransfer = atoi(optarg);
                         break;
                 case 'z':
                         initialTestParams.randomOffset = TRUE;

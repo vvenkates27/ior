@@ -119,15 +119,17 @@ typedef struct
     /* NCMPI variables */
     int var_id;                      /* variable id handle for data set */
 
-    /* DAOS variables */
-    int aiosPerTransfer;             /* number of async I/Os per transfer */
-
     /* Lustre variables */
     int lustre_stripe_count;
     int lustre_stripe_size;
     int lustre_start_ost;
     int lustre_set_striping;         /* flag that we need to set lustre striping */
     int lustre_ignore_locks;
+
+    /* DAOS variables */
+    int daos_n_shards;
+    int daos_n_targets;
+    int daos_n_aios;                 /* max number of concurrent async I/Os */
 
     /* gpfs variables */
     int gpfs_hint_access;          /* use gpfs "access range" hint */
@@ -136,8 +138,9 @@ typedef struct
 
     int id;                          /* test's unique ID */
     int intraTestBarriers;           /* barriers between open/op and op/close */
-    int daos_n_shards;
-    int daos_n_targets;
+
+    int id;                          /* test's unique ID */
+    int intraTestBarriers;           /* barriers between open/op and op/close */
 } IOR_param_t;
 
 /* each pointer is to an array, each of length equal to the number of

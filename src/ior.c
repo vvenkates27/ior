@@ -184,13 +184,13 @@ void init_IOR_Param_t(IOR_param_t * p)
         p->segmentCount = 1;
         p->blockSize = 1048576;
         p->transferSize = 262144;
-        p->aiosPerTransfer = 1;
         p->randomSeed = -1;
         p->testComm = MPI_COMM_WORLD;
         p->setAlignment = 1;
         p->lustre_start_ost = -1;
         p->daos_n_shards = -1;
         p->daos_n_targets = -1;
+        p->daos_n_aios = 1;
 }
 
 /*
@@ -731,7 +731,6 @@ static void DisplayUsage(char **argv)
                 " -W    checkWrite -- check read after write",
                 " -x    singleXferAttempt -- do not retry transfer if incomplete",
                 " -X N  reorderTasksRandomSeed -- random seed for -Z option",
-                " -y N  aiosPerTransfer -- number of async I/Os per transfer",
                 " -Y    fsyncPerWrite -- perform fsync after each POSIX write",
                 " -z    randomOffset -- access is to random, not sequential, offsets within a file",
                 " -Z    reorderTasksRandom -- changes task ordering to random ordering for readback",
@@ -1518,7 +1517,7 @@ static void ShowSetup(IOR_param_t *params)
         printf("\trepetitions        = %d\n", params->repetitions);
         printf("\txfersize           = %s\n",
                 HumanReadable(params->transferSize, BASE_TWO));
-        printf("\taios per xfer      = %d\n", params->aiosPerTransfer);
+        printf("\taios               = %d\n", params->daos_n_aios);
         printf("\tblocksize          = %s\n",
                 HumanReadable(params->blockSize, BASE_TWO));
         printf("\taggregate filesize = %s\n",
@@ -1616,7 +1615,6 @@ static void ShowTest(IOR_param_t * test)
         }
         fprintf(stdout, "\n");
         fprintf(stdout, "\t%s=%lld\n", "transferSize", test->transferSize);
-        fprintf(stdout, "\t%s=%d\n", "aiosPerTransfer", test->aiosPerTransfer);
         fprintf(stdout, "\t%s=%lld\n", "blockSize", test->blockSize);
 }
 
