@@ -68,10 +68,12 @@ struct aio {
         struct daos_mmd         a_mmd;
         struct daos_mm_frag     a_mm_frag;
         struct daos_event       a_event;
+        unsigned char          *a_buffer;
 };
 
 static daos_handle_t       eventQueue;
 static struct daos_event **events;
+static unsigned char      *buffers;
 static int                 nAios;
 static unsigned int       *targets;
 static int                 nTargets;
@@ -361,6 +363,11 @@ static void AIOInit(IOR_param_t *param)
         int         i;
         int         rc;
 
+        rc = posix_memalign((void **) &buffers, sysconf(_SC_PAGESIZE),
+                            param->transferSize * param->daos_n_aios);
+        if (rc != 0)
+                ERR("Failed to allocate buffer array");
+
         for (i = 0; i < param->daos_n_aios; i++) {
                 aio = malloc(sizeof *aio);
                 if (aio == NULL)
@@ -370,7 +377,13 @@ static void AIOInit(IOR_param_t *param)
                                      NULL /* orphan */);
                 DCHECK(rc, "Failed to initialize event for aio[%d]", i);
 
+                aio->a_buffer = buffers + param->transferSize * i;
+
                 cfs_list_add(&aio->a_list, &aios);
+
+                if (param->verbose > VERBOSE_2)
+                        printf("[%d] Allocated AIO %p: buffer %p\n", rank, aio,
+                               aio->a_buffer);
         }
 
         nAios = param->daos_n_aios;
@@ -380,7 +393,7 @@ static void AIOInit(IOR_param_t *param)
                 ERR("Failed to allocate events array");
 }
 
-static void AIOFini(void)
+static void AIOFini(IOR_param_t *param)
 {
         struct aio *aio;
         struct aio *tmp;
@@ -388,9 +401,15 @@ static void AIOFini(void)
         free(events);
 
         cfs_list_for_each_entry_safe(aio, tmp, &aios, a_list) {
-                daos_event_fini(&aio->a_event);
+                if (param->verbose > VERBOSE_2)
+                        printf("[%d] Freeing AIO %p: buffer %p\n", rank, aio,
+                               aio->a_buffer);
                 cfs_list_del_init(&aio->a_list);
+                daos_event_fini(&aio->a_event);
+                free(aio);
         }
+
+        free(buffers);
 }
 
 static void *DAOS_Create(char *testFileName, IOR_param_t *param)
@@ -469,10 +488,14 @@ static void DAOS_Wait(IOR_param_t *param)
 
                 cfs_list_move(&aio->a_list, &aios);
                 nAios++;
+
+                if (param->verbose > VERBOSE_2)
+                        printf("[%d] Completed AIO %p: buffer %p\n", rank, aio,
+                               aio->a_buffer);
         }
 
         if (param->verbose > VERBOSE_2)
-                printf("process %d found %d completed AIOs (%d free %d busy)\n",
+                printf("[%d] Found %d completed AIOs (%d free %d busy)\n",
                        rank, rc, nAios, param->daos_n_aios - nAios);
 }
 
@@ -484,38 +507,49 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         daos_off_t             offset;
         int                    rc;
 
-        /*
-         * This assumes "rankOffset == 0 && segmentCount == 1 && length %
-         * aiosPerTransfer == 0".  There should be a "check" method in
-         * ior_aiori_t.
-         */
+        assert(!param->randomOffset);
+        assert(!param->reorderTasks);
+        assert(!param->reorderTasksRandom);
         assert(param->segmentCount == 1);
-        assert(param->reorderTasks == 0);
-        assert(param->reorderTasksRandom == 0);
+
         offset = param->offset - rank * param->blockSize;
 
         /*
          * Find an available AIO descriptor.  If none, wait for one.
          */
-        if (nAios == 0)
+        while (nAios == 0)
                 DAOS_Wait(param);
         aio = cfs_list_entry(aios.next, struct aio, a_list);
         cfs_list_move_tail(&aio->a_list, &aios);
         nAios--;
 
-        if (param->verbose > VERBOSE_2)
-                printf("process %d starting an AIO (%d free %d busy)\n", rank,
-                       nAios, param->daos_n_aios - nAios);
-
         aio->a_iod.iod_nfrag = 1;
-        /*
-         * This assumes "rankOffset == 0 && segmentCount == 1".
-         */
         aio->a_iod.iod_frag[0].if_offset = offset;
         aio->a_iod.iod_frag[0].if_nob = length;
         aio->a_mmd.mmd_nfrag = 1;
-        aio->a_mmd.mmd_frag[0].mf_addr = buffer;
+        aio->a_mmd.mmd_frag[0].mf_addr = aio->a_buffer;
         aio->a_mmd.mmd_frag[0].mf_nob = length;
+
+        /*
+         * If the data written will be checked later, we have to copy in valid
+         * data instead of writing random bytes.  If the data being read is for
+         * checking purposes, poison the buffer first.
+         */
+        if (access == WRITE && param->checkWrite)
+                memcpy(aio->a_mmd.mmd_frag[0].mf_addr, buffer, length);
+        else if (access == WRITECHECK || access == READCHECK)
+                memset(aio->a_mmd.mmd_frag[0].mf_addr, '#', length);
+
+        if (param->verbose > VERBOSE_2)
+                printf("[%d] Starting AIO %p (%d free %d busy): %d "
+                       "if %lu <%llu, %llu> mf %lu <%p, %lu>\n", rank, aio,
+                       nAios, param->daos_n_aios - nAios, access,
+                       aio->a_iod.iod_nfrag,
+                       (unsigned long long) aio->a_iod.iod_frag[0].if_offset,
+                       (unsigned long long) aio->a_iod.iod_frag[0].if_nob,
+                       aio->a_mmd.mmd_nfrag,
+                       aio->a_mmd.mmd_frag[0].mf_addr,
+                       (unsigned long long) aio->a_mmd.mmd_frag[0].mf_nob);
 
         if (access == WRITE) {
                 rc = daos_object_write(fd->object, fd->epoch,
@@ -529,12 +563,21 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
                 DCHECK(rc, "Failed to start read operation");
         }
 
-        if (access == WRITECHECK || access == READCHECK)
-                /*
-                 * We are expected to fill data into the buffer before
-                 * returning.
-                 */
-                DAOS_Wait(param);
+        /*
+         * If this is a WRITECHECK or READCHECK, we are expected to fill data
+         * into the buffer before returning.  If this is the last transfer in
+         * WriteOrRead(), we wait for all AIOs to finish.  Note that if this is
+         * a READ, we don't have to return valid data as WriteOrRead() doesn't
+         * care.
+         */
+        if (access == WRITECHECK || access == READCHECK ||
+            offset + length >= param->blockSize) {
+                while (param->daos_n_aios - nAios > 0)
+                        DAOS_Wait(param);
+
+                if (access == WRITECHECK || access == READCHECK)
+                        memcpy(buffer, aio->a_mmd.mmd_frag[0].mf_addr, length);
+        }
 
         return length;
 }
@@ -544,13 +587,8 @@ static void DAOS_Close(void *file, IOR_param_t *param)
         struct fileDescriptor *fd = file;
         int                    rc;
 
-        /*
-         * Wait for all AIOs to finish.
-         */
-        while (param->daos_n_aios - nAios > 0)
-                DAOS_Wait(param);
-
-        AIOFini();
+        assert(param->daos_n_aios - nAios == 0);
+        AIOFini(param);
 
         ObjectClose(fd->object);
 
