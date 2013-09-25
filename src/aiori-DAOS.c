@@ -1,16 +1,23 @@
-/* -*- mode: c; c-basic-offset: 8; indent-tabs-mode: nil; -*-
+/*
+ * -*- mode: c; c-basic-offset: 8; indent-tabs-mode: nil; -*-
  * vim:expandtab:shiftwidth=8:tabstop=8:
  */
-/******************************************************************************\
-*                                                                              *
-*        Copyright (c) 2013, Intel Corporation.                                *
-*      See the file COPYRIGHT for a complete copyright notice and license.     *
-*                                                                              *
-********************************************************************************
-*
-* Implement of abstract I/O interface for DAOS.
-*
-\******************************************************************************/
+/*
+ * SPECIAL LICENSE RIGHTS-OPEN SOURCE SOFTWARE
+ * The Government's rights to use, modify, reproduce, release, perform, display,
+ * or disclose this software are subject to the terms of Contract No. B599860,
+ * and the terms of the GNU General Public License version 2.
+ * Any reproduction of computer software, computer software documentation, or
+ * portions thereof marked with this legend must also reproduce the markings.
+ */
+/*
+ * Copyright (c) 2013, Intel Corporation.
+ */
+/*
+ * This file implements the abstract I/O interface for DAOS.
+ *
+ * Author: Li Wei <wei.g.li@intel.com>
+ */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
