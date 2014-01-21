@@ -65,6 +65,7 @@ ior_aiori_t daos_aiori = {
 struct fileDescriptor {
         daos_handle_t container;
         daos_handle_t object;
+        daos_epoch_t  hce;
         daos_epoch_t  epoch;
 };
 
@@ -214,46 +215,44 @@ static void Fini(void)
 #endif
 }
 
-static void ShardAdd(daos_handle_t container, daos_epoch_t *epoch,
-                     IOR_param_t *param)
+static void shard_add(daos_handle_t container, daos_epoch_t epoch,
+                      IOR_param_t *param)
 {
-        if (rank == 0) {
-                unsigned int *s;
-                unsigned int *t;
-                int           i;
-                int           rc;
+        unsigned int *s;
+        unsigned int *t;
+        int           i;
+        int           rc;
 
-                s = malloc((sizeof *s) * param->daos_n_shards);
-                if (s == NULL)
-                        ERR("Failed to allocate shard array");
+        s = malloc((sizeof *s) * param->daos_n_shards);
+        if (s == NULL)
+                ERR("Failed to allocate shard array");
 
-                t = malloc((sizeof *t) * param->daos_n_shards);
-                if (t == NULL)
-                        ERR("Failed to allocate target array");
+        t = malloc((sizeof *t) * param->daos_n_shards);
+        if (t == NULL)
+                ERR("Failed to allocate target array");
 
-                for (i = 0; i < param->daos_n_shards; i++) {
-                        s[i] = i;
-                        t[i] = targets[i % param->daos_n_targets];
-                }
-
-                rc = daos_shard_add(container, *epoch, param->daos_n_shards,
-                                    t, s, NULL /* synchronous */);
-                DCHECK(rc, "Failed to create shards");
-
-                free(t);
-                free(s);
+        for (i = 0; i < param->daos_n_shards; i++) {
+                s[i] = i;
+                t[i] = targets[i % param->daos_n_targets];
         }
+
+        rc = daos_shard_add(container, epoch, param->daos_n_shards, t, s,
+                            NULL /* synchronous */);
+        DCHECK(rc, "Failed to create shards");
+
+        free(t);
+        free(s);
 }
 
 static void ContainerOpen(char *testFileName, IOR_param_t *param,
-                          daos_handle_t *container, daos_epoch_t *epoch)
+                          daos_handle_t *container, daos_epoch_t *hce)
 {
         unsigned char *buffer;
         unsigned int   size;
         int            rc;
 
         if (rank == 0) {
-                struct daos_epoch_info info;
+                struct daos_epoch_info einfo;
                 unsigned int           dMode;
 
                 if (param->open == WRITE)
@@ -266,22 +265,55 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                                          NULL /* synchronous */);
                 DCHECK(rc, "Failed to open container %s", testFileName);
 
-                rc = daos_epoch_query(*container, &info,
+                if (param->open != WRITE && param->daos_wait != 0) {
+                        daos_epoch_t e;
+
+                        e.seq = param->daos_wait;
+
+                        if (rank == 0 && param->verbose > VERBOSE_1)
+                                printf("[%d] Waiting for epoch %lu\n", rank,
+                                       e.seq);
+
+                        rc = daos_epoch_wait(*container, &e,
+                                             NULL /* ignore HLE */,
+                                             NULL /* synchronous */);
+                        DCHECK(rc, "Failed to wait for epoch %lu",
+                               param->daos_wait);
+                }
+
+                rc = daos_epoch_query(*container, &einfo,
                                       NULL /* synchronous */);
                 DCHECK(rc, "Failed to get epoch info from %s", testFileName);
 
-                *epoch = info.epi_hce;
-        }
+                *hce = einfo.epi_hce;
 
-        if (param->open == WRITE) {
-                epoch->seq++;
+                if (param->open == WRITE && hce->seq == 0) {
+                        daos_epoch_t e = {hce->seq + 1};
 
-                ShardAdd(*container, epoch, param);
+                        shard_add(*container, e, param);
 
-                if (rank == 0) {
-                        rc = daos_epoch_commit(*container, *epoch, 1 /* sync */,
+                        rc = daos_epoch_commit(*container, e, 1 /* sync */,
                                                NULL, NULL /* synchronous */);
                         DCHECK(rc, "Failed to commit shard creation");
+
+                        *hce = e;
+                } else {
+                        struct daos_container_info cinfo;
+
+                        /*
+                         * The container should have been created and set up by
+                         * a previous write run.
+                         */
+                        rc = daos_container_query(*container, hce, &cinfo,
+                                                  NULL /* synchronous */);
+                        DCHECK(rc, "Failed to query container");
+
+                        param->daos_n_shards = cinfo.ci_nshard;
+
+                        if (param->verbose > VERBOSE_1)
+                                printf("[%d] Found container with %d shards: "
+                                       "HCE %lu\n", rank, param->daos_n_shards,
+                                       hce->seq);
                 }
         }
 
@@ -296,7 +328,7 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
         MPI_CHECK(MPI_Bcast(&size, 1, MPI_UNSIGNED, 0, param->testComm),
                   "Failed to broadcast size");
 
-        buffer = malloc(size + sizeof epoch->seq);
+        buffer = malloc(size + sizeof hce->seq);
         if (buffer == NULL)
                 ERR("Failed to allocate message buffer");
 
@@ -304,10 +336,10 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                 rc = daos_local2global(*container, buffer, &size);
                 DCHECK(rc, "Failed to get global container handle");
 
-                memmove(buffer + size, &epoch->seq, sizeof epoch->seq);
+                memmove(buffer + size, &hce->seq, sizeof hce->seq);
         }
 
-        MPI_CHECK(MPI_Bcast(buffer, size + sizeof epoch->seq, MPI_BYTE, 0,
+        MPI_CHECK(MPI_Bcast(buffer, size + sizeof hce->seq, MPI_BYTE, 0,
                             param->testComm), "Failed to broadcast message");
 
         if (rank != 0) {
@@ -315,12 +347,11 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                                        NULL /* sychronous */);
                 DCHECK(rc, "Failed to get local container handle");
 
-                memmove(&epoch->seq, buffer + size, sizeof epoch->seq);
+                memmove(&hce->seq, buffer + size, sizeof hce->seq);
         }
 }
 
-static void ContainerClose(daos_handle_t container, daos_epoch_t *epoch,
-                           IOR_param_t *param)
+static void ContainerClose(daos_handle_t container, IOR_param_t *param)
 {
         int rc;
 
@@ -329,7 +360,7 @@ static void ContainerClose(daos_handle_t container, daos_epoch_t *epoch,
 }
 
 static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
-                       daos_epoch_t *epoch, IOR_param_t *param)
+                       IOR_param_t *param)
 {
         daos_obj_id_t oid;
         unsigned int  mode;
@@ -458,15 +489,32 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
          * If param->open is not WRITE, the container must be created by a
          * "symmetrical" write session first.
          */
-        ContainerOpen(testFileName, param, &fd->container, &fd->epoch);
+        ContainerOpen(testFileName, param, &fd->container, &fd->hce);
 
-        if (param->open == WRITE)
-                /*
-                 * All write operations form a single transaction.
-                 */
-                fd->epoch.seq++;
+        if (param->open == WRITE) {
+                if (param->daos_epoch == 0)
+                        fd->epoch.seq = fd->hce.seq + 1;
+                else if (param->daos_epoch <= fd->hce.seq)
+                        ERR("Can't modify committed epoch\n");
+                else
+                        fd->epoch.seq = param->daos_epoch;
+        } else {
+                if (param->daos_epoch == 0) {
+                        if (param->daos_wait == 0)
+                                fd->epoch.seq = fd->hce.seq;
+                        else
+                                fd->epoch.seq = param->daos_wait;
+                } else if (param->daos_epoch > fd->hce.seq) {
+                        ERR("Can't read uncommitted epoch\n");
+                } else {
+                        fd->epoch.seq = param->daos_epoch;
+                }
+        }
 
-        ObjectOpen(fd->container, &fd->object, &fd->epoch, param);
+        if (rank == 0 && param->verbose > VERBOSE_1)
+                printf("[%d] Accessing epoch %lu\n", rank, fd->epoch.seq);
+
+        ObjectOpen(fd->container, &fd->object, param);
 
         AIOInit(param);
 
@@ -616,9 +664,11 @@ static void DAOS_Close(void *file, IOR_param_t *param)
                                                NULL /* synchronous */);
                         DCHECK(rc, "Failed to commit object write");
                 }
+
+                fd->hce = fd->epoch;
         }
 
-        ContainerClose(fd->container, &fd->epoch, param);
+        ContainerClose(fd->container, param);
 
         free(fd);
 

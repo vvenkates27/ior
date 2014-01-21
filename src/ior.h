@@ -130,6 +130,8 @@ typedef struct
     int daos_n_shards;
     int daos_n_targets;
     int daos_n_aios;                 /* max number of concurrent async I/Os */
+    unsigned long daos_epoch;        /* epoch to access */
+    unsigned long daos_wait;         /* epoch to wait for before reading */
 
     /* gpfs variables */
     int gpfs_hint_access;          /* use gpfs "access range" hint */
