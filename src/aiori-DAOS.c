@@ -252,8 +252,9 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
         int            rc;
 
         if (rank == 0) {
-                struct daos_epoch_info einfo;
-                unsigned int           dMode;
+                daos_container_status_t status;
+                struct daos_epoch_info  einfo;
+                unsigned int            dMode;
 
                 if (param->open == WRITE)
                         dMode = DAOS_COO_RW | DAOS_COO_CREATE;
@@ -261,9 +262,11 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                         dMode = DAOS_COO_RO;
 
                 rc = daos_container_open(testFileName, dMode, param->numTasks,
-                                         NULL /* ignore status */, container,
+                                         &status, container,
                                          NULL /* synchronous */);
                 DCHECK(rc, "Failed to open container %s", testFileName);
+                if (status != DAOS_CONTAINER_ST_OK)
+                        ERR("Container not okay");
 
                 if (param->open != WRITE && param->daos_wait != 0) {
                         daos_epoch_t e;
