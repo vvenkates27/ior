@@ -651,12 +651,9 @@ static void DAOS_Close(void *file, IOR_param_t *param)
         ObjectClose(fd->object);
 
         if (param->open == WRITE) {
-                if (!param->useO_DIRECT) {
-                        rc = daos_shard_flush(fd->container, fd->epoch,
-                                              rank % param->daos_n_shards,
-                                              NULL);
-                        DCHECK(rc, "Failed to close object");
-                }
+                rc = daos_shard_flush(fd->container, fd->epoch,
+                                      rank % param->daos_n_shards, NULL);
+                DCHECK(rc, "Failed to close object");
 
                 MPI_CHECK(MPI_Barrier(param->testComm),
                           "Failed to synchronize processes");
