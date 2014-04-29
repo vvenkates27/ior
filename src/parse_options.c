@@ -288,6 +288,8 @@ void DecodeDirective(char *line, IOR_param_t *params)
                 params->daos_epoch = atoi(value);
         } else if (strcasecmp(option, "daoswait") == 0) {
                 params->daos_wait = atoi(value);
+        } else if (strcasecmp(option, "daoswrtonly") == 0) {
+                params->daos_wrtonly = 1;
         } else {
                 if (rank == 0)
                         fprintf(stdout, "Unrecognized parameter \"%s\"\n",

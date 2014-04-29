@@ -130,6 +130,7 @@ typedef struct
     int daos_n_shards;
     int daos_n_targets;
     int daos_n_aios;                 /* max number of concurrent async I/Os */
+    int daos_wrtonly;                /* write only, no flush and commit */
     unsigned long daos_epoch;        /* epoch to access */
     unsigned long daos_wait;         /* epoch to wait for before reading */
 
