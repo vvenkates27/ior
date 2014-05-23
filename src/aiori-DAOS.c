@@ -358,8 +358,19 @@ static void ContainerClose(daos_handle_t container, IOR_param_t *param)
 {
         int rc;
 
-        rc = daos_container_close(container, NULL /* synchronous */);
-        DCHECK(rc, "Failed to close container");
+        if (rank != 0) {
+                rc = daos_container_close(container, NULL /* synchronous */);
+                DCHECK(rc, "Failed to close container");
+        }
+
+        /* An MPI_Gather() call is probably more appropriate. */
+        MPI_CHECK(MPI_Barrier(param->testComm),
+                  "Failed to synchronize processes");
+
+        if (rank == 0) {
+                rc = daos_container_close(container, NULL /* synchronous */);
+                DCHECK(rc, "Failed to close container");
+        }
 }
 
 static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
