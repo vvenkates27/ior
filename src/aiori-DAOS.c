@@ -585,7 +585,6 @@ static void DAOS_Wait(IOR_param_t *param)
  */
 static IOR_offset_t OffsetMap(IOR_param_t *param)
 {
-        IOR_offset_t segmentSizeIOR;
         IOR_offset_t segmentSize;
         IOR_offset_t segment;
         IOR_offset_t offset;
@@ -595,27 +594,31 @@ static IOR_offset_t OffsetMap(IOR_param_t *param)
         assert(!param->reorderTasks);
         assert(!param->reorderTasksRandom);
 
-        segmentSizeIOR = param->blockSize * param->numTasks;
-        segment = param->offset / segmentSizeIOR;
+        segmentSize = param->blockSize * param->numTasks;
+        segment = param->offset / segmentSize;
 
         /*
          * Map to continuous address space [0, blockSize * segmentCount).
          */
-        offset = param->offset - (segmentSizeIOR - param->blockSize) * segment -
+        offset = param->offset - (segmentSize - param->blockSize) * segment -
                  param->blockSize * rank;
 
         if (param->daos_n_objects <= param->numTasks) {
-                int tasksPerObject;
+                IOR_offset_t segmentSizeInObject;
+                int          tasksPerObject;
+                int          rankInObject;
 
                 assert(param->numTasks % param->daos_n_objects == 0);
                 tasksPerObject = param->numTasks / param->daos_n_objects;
-                segmentSize = param->blockSize * tasksPerObject;
+                rankInObject = rank / param->daos_n_objects;
+                segmentSizeInObject = param->blockSize * tasksPerObject;
 
                 /*
-                 * Map to per-object segment size.
+                 * Map to in-object segment size.
                  */
-                offset = offset + (segmentSize - param->blockSize) * segment +
-                         param->blockSize * rank;
+                offset = offset +
+                         (segmentSizeInObject - param->blockSize) * segment +
+                         param->blockSize * rankInObject;
         } else {
                 assert(0); /* XXX */
         }
