@@ -127,6 +127,7 @@ typedef struct
     int lustre_ignore_locks;
 
     /* DAOS variables */
+    int daos_n_objects;
     int daos_n_shards;
     int daos_n_targets;
     int daos_n_aios;                 /* max number of concurrent async I/Os */

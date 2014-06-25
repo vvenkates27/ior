@@ -378,10 +378,19 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
 {
         daos_obj_id_t oid;
         unsigned int  mode;
+        int           onum;
         int           rc;
 
-        oid.o_id_hi = rank % param->daos_n_shards;
-        oid.o_id_lo = rank / param->daos_n_shards;
+        /*
+         * Map the process to an object number in [0, param->daos_n_objects).
+         */
+        onum = rank % param->daos_n_objects;
+
+        /*
+         * Map the object number to a shard and an object ID.
+         */
+        oid.o_id_hi = onum % param->daos_n_shards;
+        oid.o_id_lo = onum / param->daos_n_shards;
 
         mode = DAOS_OBJ_IO_SEQ;
         if (param->open == WRITE) {
@@ -392,8 +401,8 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
                 mode |= DAOS_OBJ_RO;
         }
 
-        if (param->verbose > VERBOSE_2)
-                printf("process %d opening object <%llu, %llu> with mode %x\n",
+        if (param->verbose >= VERBOSE_2)
+                printf("process %d opening object <%llu, %llu> with mode %#x\n",
                        rank, oid.o_id_hi, oid.o_id_lo, mode);
 
         rc = daos_object_open(container, oid, mode, object,
@@ -493,6 +502,9 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
         if (param->daos_n_shards == -1)
                 param->daos_n_shards = param->daos_n_targets;
 
+        if (param->daos_n_objects == -1)
+                param->daos_n_objects = param->numTasks;
+
         free(dir);
 
         fd = malloc(sizeof *fd);
@@ -568,6 +580,53 @@ static void DAOS_Wait(IOR_param_t *param)
                        rank, rc, nAios, param->daos_n_aios - nAios);
 }
 
+/*
+ * Map IOR file offset param->offset to a DAOS object offset.
+ */
+static IOR_offset_t OffsetMap(IOR_param_t *param)
+{
+        IOR_offset_t segmentSizeIOR;
+        IOR_offset_t segmentSize;
+        IOR_offset_t segment;
+        IOR_offset_t offset;
+
+        assert(!param->filePerProc);
+        assert(!param->randomOffset);
+        assert(!param->reorderTasks);
+        assert(!param->reorderTasksRandom);
+
+        segmentSizeIOR = param->blockSize * param->numTasks;
+        segment = param->offset / segmentSizeIOR;
+
+        /*
+         * Map to continuous address space [0, blockSize * segmentCount).
+         */
+        offset = param->offset - (segmentSizeIOR - param->blockSize) * segment -
+                 param->blockSize * rank;
+
+        if (param->daos_n_objects <= param->numTasks) {
+                int tasksPerObject;
+
+                assert(param->numTasks % param->daos_n_objects == 0);
+                tasksPerObject = param->numTasks / param->daos_n_objects;
+                segmentSize = param->blockSize * tasksPerObject;
+
+                /*
+                 * Map to per-object segment size.
+                 */
+                offset = offset + (segmentSize - param->blockSize) * segment +
+                         param->blockSize * rank;
+        } else {
+                assert(0); /* XXX */
+        }
+
+        if (param->verbose >= VERBOSE_3)
+                printf("[%d] Mapped %llu to %llu\n", rank,
+                       (unsigned long long) param->offset, offset);
+
+        return offset;
+}
+
 static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
                               IOR_offset_t length, IOR_param_t *param)
 {
@@ -576,12 +635,7 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         daos_off_t             offset;
         int                    rc;
 
-        assert(!param->randomOffset);
-        assert(!param->reorderTasks);
-        assert(!param->reorderTasksRandom);
-        assert(param->segmentCount == 1);
-
-        offset = param->offset - rank * param->blockSize;
+        offset = OffsetMap(param);
 
         /*
          * Find an available AIO descriptor.  If none, wait for one.

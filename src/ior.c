@@ -188,6 +188,7 @@ void init_IOR_Param_t(IOR_param_t * p)
         p->testComm = MPI_COMM_WORLD;
         p->setAlignment = 1;
         p->lustre_start_ost = -1;
+        p->daos_n_objects = -1;
         p->daos_n_shards = -1;
         p->daos_n_targets = -1;
         p->daos_n_aios = 1;
