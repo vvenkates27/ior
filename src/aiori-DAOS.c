@@ -473,6 +473,39 @@ static void AIOFini(IOR_param_t *param)
         free(buffers);
 }
 
+static void AIOWait(IOR_param_t *param)
+{
+        struct aio *aio;
+        int         i;
+        int         rc;
+
+        rc = daos_eq_poll(eventQueue, 0, DAOS_EQ_WAIT, param->daos_n_aios,
+                          events);
+        DCHECK(rc, "Failed to poll event queue");
+        assert(rc <= param->daos_n_aios - nAios);
+
+        for (i = 0; i < rc; i++) {
+                aio = (struct aio *)
+                      ((char *) events[i] -
+                       (char *) (&((struct aio *) 0)->a_event));
+
+                DCHECK(aio->a_event.ev_error, "Failed to transfer (%lu, %lu)",
+                       aio->a_iod.iod_frag[0].if_offset,
+                       aio->a_iod.iod_frag[0].if_nob);
+
+                cfs_list_move(&aio->a_list, &aios);
+                nAios++;
+
+                if (param->verbose > VERBOSE_2)
+                        printf("[%d] Completed AIO %p: buffer %p\n", rank, aio,
+                               aio->a_buffer);
+        }
+
+        if (param->verbose > VERBOSE_2)
+                printf("[%d] Found %d completed AIOs (%d free %d busy)\n",
+                       rank, rc, nAios, param->daos_n_aios - nAios);
+}
+
 static void *DAOS_Create(char *testFileName, IOR_param_t *param)
 {
         return DAOS_Open(testFileName, param);
@@ -547,39 +580,6 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
         return fd;
 }
 
-static void DAOS_Wait(IOR_param_t *param)
-{
-        struct aio *aio;
-        int         i;
-        int         rc;
-
-        rc = daos_eq_poll(eventQueue, 0, DAOS_EQ_WAIT, param->daos_n_aios,
-                          events);
-        DCHECK(rc, "Failed to poll event queue");
-        assert(rc <= param->daos_n_aios - nAios);
-
-        for (i = 0; i < rc; i++) {
-                aio = (struct aio *)
-                      ((char *) events[i] -
-                       (char *) (&((struct aio *) 0)->a_event));
-
-                DCHECK(aio->a_event.ev_error, "Failed to transfer (%lu, %lu)",
-                       aio->a_iod.iod_frag[0].if_offset,
-                       aio->a_iod.iod_frag[0].if_nob);
-
-                cfs_list_move(&aio->a_list, &aios);
-                nAios++;
-
-                if (param->verbose > VERBOSE_2)
-                        printf("[%d] Completed AIO %p: buffer %p\n", rank, aio,
-                               aio->a_buffer);
-        }
-
-        if (param->verbose > VERBOSE_2)
-                printf("[%d] Found %d completed AIOs (%d free %d busy)\n",
-                       rank, rc, nAios, param->daos_n_aios - nAios);
-}
-
 /*
  * Map IOR file offset param->offset to a DAOS object offset.
  */
@@ -644,7 +644,7 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
          * Find an available AIO descriptor.  If none, wait for one.
          */
         while (nAios == 0)
-                DAOS_Wait(param);
+                AIOWait(param);
         aio = cfs_list_entry(aios.next, struct aio, a_list);
         cfs_list_move_tail(&aio->a_list, &aios);
         nAios--;
@@ -691,18 +691,13 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
 
         /*
          * If this is a WRITECHECK or READCHECK, we are expected to fill data
-         * into the buffer before returning.  If this is the last transfer in
-         * WriteOrRead(), we wait for all AIOs to finish.  Note that if this is
-         * a READ, we don't have to return valid data as WriteOrRead() doesn't
-         * care.
+         * into the buffer before returning.  Note that if this is a READ, we
+         * don't have to return valid data as WriteOrRead() doesn't care.
          */
-        if (access == WRITECHECK || access == READCHECK ||
-            offset + length >= param->blockSize) {
+        if (access == WRITECHECK || access == READCHECK) {
                 while (param->daos_n_aios - nAios > 0)
-                        DAOS_Wait(param);
-
-                if (access == WRITECHECK || access == READCHECK)
-                        memcpy(buffer, aio->a_mmd.mmd_frag[0].mf_addr, length);
+                        AIOWait(param);
+                memcpy(buffer, aio->a_mmd.mmd_frag[0].mf_addr, length);
         }
 
         return length;
@@ -713,7 +708,8 @@ static void DAOS_Close(void *file, IOR_param_t *param)
         struct fileDescriptor *fd = file;
         int                    rc;
 
-        assert(param->daos_n_aios - nAios == 0);
+        while (param->daos_n_aios - nAios > 0)
+                AIOWait(param);
         AIOFini(param);
 
         ObjectClose(fd->object);
