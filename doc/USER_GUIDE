@@ -346,8 +346,30 @@ GPFS-SPECIFIC:
   * gpfsHintAccess       - use gpfs_fcntl hints to pre-declare accesses
 
   * gpfsReleaseToken     - immediately after opening or creating file, release
-			   all locks.  Might help mitigate lock-revocation
-			   traffic when many proceses write/read to same file.
+                           all locks.  Might help mitigate lock-revocation
+                           traffic when many proceses write/read to same file.
+
+DAOS-ONLY:
+==========
+  * daosPool             - UUID of the pool []
+
+  * daosRecordSize       - size (in bytes) of an akey record [256k]
+                           NOTE: must divide transferSize
+
+  * daosStripeSize       - size (in bytes) of a chunk in a stripe [512k]
+                           NOTE: must be a multiple of transferSize
+
+  * daosStripeCount      - number of stripes [64 * number of targets]
+                           NOTE: i.e., number of dkeys
+
+  * daosAios             - max number of asychonous I/Os [1]
+
+  * daosWriteOnly        - skip flushing and committing [0=FALSE]
+
+  * daosEpoch            - epoch to read or write [0]
+                           NOTE: 0 denotes reading GHCE or writing GHCE + 1
+
+  * daosWait             - epoch to wait when opening the container [0]
 
 ***********************
 * 5. VERBOSITY LEVELS *

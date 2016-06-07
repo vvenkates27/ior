@@ -60,6 +60,8 @@ typedef struct ior_aiori {
         void (*set_version)(IOR_param_t *);
         void (*fsync)(void *, IOR_param_t *);
         IOR_offset_t (*get_file_size)(IOR_param_t *, MPI_Comm, char *);
+        void (*init)(IOR_param_t *);
+        void (*fini)(IOR_param_t *);
 } ior_aiori_t;
 
 ior_aiori_t posix_aiori;

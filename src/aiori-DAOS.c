@@ -11,12 +11,10 @@
  * portions thereof marked with this legend must also reproduce the markings.
  */
 /*
- * Copyright (c) 2013, Intel Corporation.
+ * Copyright (c) 2013, 2016 Intel Corporation.
  */
 /*
  * This file implements the abstract I/O interface for DAOS.
- *
- * Author: Li Wei <wei.g.li@intel.com>
  */
 
 #ifdef HAVE_CONFIG_H
@@ -29,7 +27,7 @@
 #include <sys/types.h>
 #include <libgen.h>
 #include <stdbool.h>
-#include <daos/daos_api.h>
+#include <daos_sr.h>
 
 #include "ior.h"
 #include "aiori.h"
@@ -38,6 +36,8 @@
 
 /**************************** P R O T O T Y P E S *****************************/
 
+static void DAOS_Init(IOR_param_t *);
+static void DAOS_Fini(IOR_param_t *);
 static void *DAOS_Create(char *, IOR_param_t *);
 static void *DAOS_Open(char *, IOR_param_t *);
 static IOR_offset_t DAOS_Xfer(int, void *, IOR_size_t *,
@@ -59,33 +59,44 @@ ior_aiori_t daos_aiori = {
         DAOS_Delete,
         DAOS_SetVersion,
         DAOS_Fsync,
-        DAOS_GetFileSize
+        DAOS_GetFileSize,
+        DAOS_Init,
+        DAOS_Fini
+};
+
+enum handleType {
+        POOL_HANDLE,
+        CONTAINER_HANDLE
 };
 
 struct fileDescriptor {
-        daos_handle_t container;
-        daos_handle_t object;
-        daos_epoch_t  hce;
-        daos_epoch_t  epoch;
+        daos_handle_t  container;
+        daos_co_info_t containerInfo;
+        daos_handle_t  object;
+        daos_epoch_t   epoch;
 };
 
 struct aio {
         cfs_list_t              a_list;
-        struct daos_iod         a_iod;
-        struct daos_io_frag     a_io_frag;
-        struct daos_mmd         a_mmd;
-        struct daos_mm_frag     a_mm_frag;
+        char                    a_dkeyBuf[32];
+        daos_dkey_t             a_dkey;
+        daos_recx_t             a_recx;
+        unsigned char           a_csumBuf[32];
+        daos_csum_buf_t         a_csum;
+        daos_epoch_range_t      a_epochRange;
+        daos_vec_iod_t          a_iod;
+        daos_iov_t              a_iov;
+        daos_sg_list_t          a_sgl;
         struct daos_event       a_event;
-        unsigned char          *a_buffer;
 };
 
 static daos_handle_t       eventQueue;
 static struct daos_event **events;
 static unsigned char      *buffers;
 static int                 nAios;
-static unsigned int       *targets;
-static int                 nTargets;
-static int                 initialized;
+static daos_handle_t       pool = DAOS_HDL_INVAL;
+static daos_pool_info_t    poolInfo;
+static daos_oclass_id_t    objectClass = 1;
 
 static CFS_LIST_HEAD(aios);
 
@@ -96,262 +107,144 @@ do {                                                                    \
         int _rc = (rc);                                                 \
                                                                         \
         if (_rc < 0) {                                                  \
-                fprintf(stdout, "ior ERROR (%s:%d): %d: %s: "           \
-                        format"\n", __FILE__, __LINE__, rank,           \
-                        strerror(-_rc), ##__VA_ARGS__);                 \
+                fprintf(stdout, "ior ERROR (%s:%d): %d: %d: "           \
+                        format"\n", __FILE__, __LINE__, rank, _rc,      \
+                        ##__VA_ARGS__);                                 \
                 fflush(stdout);                                         \
                 MPI_Abort(MPI_COMM_WORLD, -1);                          \
         }                                                               \
-} while (0);
+} while (0)
 
-static char *
-path_get_dir(const char *path)
+#define INFO(level, param, format, ...)                                 \
+do {                                                                    \
+        if (param->verbose >= level)                                    \
+                printf("[%d] "format"\n", rank, ##__VA_ARGS__);          \
+} while (0)
+
+/* Distribute process 0's pool or container handle to others. */
+static void HandleDistribute(daos_handle_t *handle, enum handleType type,
+                             IOR_param_t *param)
 {
-        char *p;
-        char *d;
+        daos_iov_t global;
+        int        rc;
 
-        p = strdup(path);
-        if (p == NULL)
-                return NULL;
-        d = strdup(dirname(p));
-        free(p);
-        return d;
-}
+        assert(type == POOL_HANDLE || !daos_handle_is_inval(pool));
 
-static int
-target_compare(const void *a, const void *b)
-{
-        return (*(const unsigned int *) a) - (*(const unsigned int *) b);
-}
-
-static void SysInfoInit(const char *path)
-{
-        daos_handle_t        sysContainer;
-        struct daos_location loc;
-        struct daos_loc_key *lks;
-        unsigned int         lkn;
-        int                  i;
-        int                  rc;
+        global.iov_buf = NULL;
+        global.iov_buf_len = 0;
+        global.iov_len = 0;
 
         if (rank == 0) {
-#ifdef HAVE_DAOS_POSIX
-                path = getenv("DAOS_POSIX");
-#endif
-                rc = daos_sys_open(path, &sysContainer, NULL /* synchronous */);
-                DCHECK(rc, "Failed to open system container");
-
-                loc.lc_cage = DAOS_LOC_UNKNOWN;
-                rc = daos_sys_query(sysContainer, &loc, 0 /* whole tree */,
-                                    &lkn, NULL /* size query */,
-                                    NULL /* synchronous */);
-                DCHECK(rc, "Failed to get size of location keys");
-
-                lks = malloc((sizeof *lks) * lkn);
-                if (lks == NULL)
-                        ERR("Failed to allocate location keys");
-
-                rc = daos_sys_query(sysContainer, &loc, 0 /* whole tree */,
-                                    &lkn, lks, NULL /* synchronous */);
-                DCHECK(rc, "Failed to get location keys");
-
-                rc = daos_sys_close(sysContainer, NULL /* synchronous */);
-                DCHECK(rc, "Failed to get location keys");
-
-                nTargets = 0;
-                for (i = 0; i < lkn; i++)
-                        if (lks[i].lk_type == DAOS_LOC_TYP_TARGET)
-                                nTargets++;
+                /* Get the global handle size. */
+                if (type == POOL_HANDLE)
+                        rc = dsr_pool_local2global(*handle, &global);
+                else
+                        rc = dsr_co_local2global(*handle, &global);
+                DCHECK(rc, "Failed to get global handle size");
         }
 
-        MPI_Bcast(&nTargets, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_CHECK(MPI_Bcast(&global.iov_buf_len, 1, MPI_UINT64_T, 0,
+                            param->testComm),
+                  "Failed to bcast global handle buffer size");
 
-        targets = malloc((sizeof *targets) * nTargets);
-        if (targets == NULL)
-                ERR("Failed to allocate target array");
+        global.iov_buf = malloc(global.iov_buf_len);
+        if (global.iov_buf == NULL)
+                ERR("Failed to allocate global handle buffer");
 
         if (rank == 0) {
-                unsigned int   *t;
-
-                t = targets;
-                for (i = 0; i < lkn; i++)
-                        if (lks[i].lk_type == DAOS_LOC_TYP_TARGET)
-                                *t++ = lks[i].lk_id;
-
-                free(lks);
-
-                qsort(targets, nTargets, sizeof *targets, target_compare);
+                if (type == POOL_HANDLE)
+                        rc = dsr_pool_local2global(*handle, &global);
+                else
+                        rc = dsr_co_local2global(*handle, &global);
+                DCHECK(rc, "Failed to create global handle");
         }
 
-        MPI_Bcast(targets, nTargets, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
-}
+        MPI_CHECK(MPI_Bcast(global.iov_buf, global.iov_buf_len, MPI_BYTE, 0,
+                            param->testComm),
+                  "Failed to bcast global pool handle");
 
-static void SysInfoFini(void)
-{
-        free(targets);
-}
+        if (rank != 0) {
+                /* A larger-than-actual length works just fine. */
+                global.iov_len = global.iov_buf_len;
 
-static void Init(void)
-{
-        int rc;
-
-#ifdef HAVE_DAOS_POSIX
-        rc = daos_posix_init();
-        DCHECK(rc, "Failed to initialize daos-posix");
-#endif
-
-	rc = daos_eq_create(&eventQueue);
-        DCHECK(rc, "Failed to create event queue");
-}
-
-static void Fini(void)
-{
-        int rc;
-
-	rc = daos_eq_destroy(eventQueue);
-        DCHECK(rc, "Failed to destroy event queue");
-
-#ifdef HAVE_DAOS_POSIX
-        daos_posix_finalize();
-#endif
-}
-
-static void shard_add(daos_handle_t container, daos_epoch_t epoch,
-                      IOR_param_t *param)
-{
-        unsigned int *s;
-        unsigned int *t;
-        int           i;
-        int           rc;
-
-        s = malloc((sizeof *s) * param->daos_n_shards);
-        if (s == NULL)
-                ERR("Failed to allocate shard array");
-
-        t = malloc((sizeof *t) * param->daos_n_shards);
-        if (t == NULL)
-                ERR("Failed to allocate target array");
-
-        for (i = 0; i < param->daos_n_shards; i++) {
-                s[i] = i;
-                t[i] = targets[i % param->daos_n_targets];
+                if (type == POOL_HANDLE)
+                        rc = dsr_pool_global2local(global, handle);
+                else
+                        rc = dsr_co_global2local(pool, global, handle);
+                DCHECK(rc, "Failed to get local handle");
         }
 
-        rc = daos_shard_add(container, epoch, param->daos_n_shards, t, s,
-                            NULL /* synchronous */);
-        DCHECK(rc, "Failed to create shards");
-
-        free(t);
-        free(s);
+        free(global.iov_buf);
 }
 
 static void ContainerOpen(char *testFileName, IOR_param_t *param,
-                          daos_handle_t *container, daos_epoch_t *hce)
+                          daos_handle_t *container, daos_co_info_t *info)
 {
-        unsigned char *buffer;
-        unsigned int   size;
-        int            rc;
+        int rc;
 
         if (rank == 0) {
-                daos_container_status_t status;
-                struct daos_epoch_info  einfo;
-                unsigned int            dMode;
+                uuid_t       uuid;
+                unsigned int dFlags;
+
+                rc = uuid_parse(testFileName, uuid);
+                DCHECK(rc, "Failed to parse 'testFile': %s", testFileName);
+
+                if (param->open == WRITE &&
+                    param->useExistingTestFile == FALSE) {
+                        INFO(VERBOSE_2, param, "Creating container %s\n",
+                             testFileName);
+
+                        rc = dsr_co_create(pool, uuid, NULL /* ev */);
+                        DCHECK(rc, "Failed to create container %s",
+                               testFileName);
+                }
+
+                INFO(VERBOSE_2, param, "Openning container %s\n", testFileName);
 
                 if (param->open == WRITE)
-                        dMode = DAOS_COO_RW | DAOS_COO_CREATE;
+                        dFlags = DAOS_COO_RW;
                 else
-                        dMode = DAOS_COO_RO;
+                        dFlags = DAOS_COO_RO;
 
-                rc = daos_container_open(testFileName, dMode, param->numTasks,
-                                         &status, container,
-                                         NULL /* synchronous */);
+                rc = dsr_co_open(pool, uuid, dFlags, NULL /* failed */,
+                                 container, info, NULL /* ev */);
                 DCHECK(rc, "Failed to open container %s", testFileName);
-                if (status != DAOS_CONTAINER_ST_OK)
-                        ERR("Container not okay");
 
-                if (param->open != WRITE && param->daos_wait != 0) {
+#if 0
+                if (param->open != WRITE && param->daosWait != 0) {
                         daos_epoch_t e;
 
-                        e.seq = param->daos_wait;
+                        e = param->daosWait;
 
-                        if (rank == 0 && param->verbose > VERBOSE_1)
-                                printf("[%d] Waiting for epoch %lu\n", rank,
-                                       e.seq);
+                        INFO(VERBOSE_2, param, "Waiting for epoch %lu\n", e);
 
                         rc = daos_epoch_wait(*container, &e,
                                              NULL /* ignore HLE */,
                                              NULL /* synchronous */);
                         DCHECK(rc, "Failed to wait for epoch %lu",
-                               param->daos_wait);
+                               param->daosWait);
                 }
+#endif
 
-                rc = daos_epoch_query(*container, &einfo,
-                                      NULL /* synchronous */);
-                DCHECK(rc, "Failed to get epoch info from %s", testFileName);
-
-                *hce = einfo.epi_hce;
-
-                if (param->open == WRITE && hce->seq == 0) {
-                        daos_epoch_t e = {hce->seq + 1};
-
-                        shard_add(*container, e, param);
-
-                        rc = daos_epoch_commit(*container, e, 1 /* sync */,
-                                               NULL, NULL /* synchronous */);
-                        DCHECK(rc, "Failed to commit shard creation");
-
-                        *hce = e;
-                } else {
-                        struct daos_container_info cinfo;
-
-                        /*
-                         * The container should have been created and set up by
-                         * a previous write run.
-                         */
-                        rc = daos_container_query(*container, hce, &cinfo,
-                                                  NULL /* synchronous */);
-                        DCHECK(rc, "Failed to query container");
-
-                        param->daos_n_shards = cinfo.ci_nshard;
-
-                        if (param->verbose > VERBOSE_1)
-                                printf("[%d] Found container with %d shards: "
-                                       "HCE %lu\n", rank, param->daos_n_shards,
-                                       hce->seq);
-                }
+                INFO(VERBOSE_2, param, "Container epoch state: \n");
+                INFO(VERBOSE_2, param, "   HCE: %lu\n",
+                     info->ci_epoch_state.es_hce);
+                INFO(VERBOSE_2, param, "   LRE: %lu\n",
+                     info->ci_epoch_state.es_lre);
+                INFO(VERBOSE_2, param, "   LHE: %lu (%lx)\n",
+                     info->ci_epoch_state.es_lhe, info->ci_epoch_state.es_lhe);
+                INFO(VERBOSE_2, param, "  GHCE: %lu\n",
+                     info->ci_epoch_state.es_glb_hce);
+                INFO(VERBOSE_2, param, "  GLRE: %lu\n",
+                     info->ci_epoch_state.es_glb_lre);
+                INFO(VERBOSE_2, param, "  GLHE: %lu\n",
+                     info->ci_epoch_state.es_glb_hpce);
         }
 
-        if (param->numTasks == 1)
-                return;
+        HandleDistribute(container, CONTAINER_HANDLE, param);
 
-        if (rank == 0) {
-                rc = daos_local2global(*container, NULL, &size);
-                DCHECK(rc, "Failed to get global container handle size");
-        }
-
-        MPI_CHECK(MPI_Bcast(&size, 1, MPI_UNSIGNED, 0, param->testComm),
-                  "Failed to broadcast size");
-
-        buffer = malloc(size + sizeof hce->seq);
-        if (buffer == NULL)
-                ERR("Failed to allocate message buffer");
-
-        if (rank == 0) {
-                rc = daos_local2global(*container, buffer, &size);
-                DCHECK(rc, "Failed to get global container handle");
-
-                memmove(buffer + size, &hce->seq, sizeof hce->seq);
-        }
-
-        MPI_CHECK(MPI_Bcast(buffer, size + sizeof hce->seq, MPI_BYTE, 0,
-                            param->testComm), "Failed to broadcast message");
-
-        if (rank != 0) {
-                rc = daos_global2local(buffer, size, container,
-                                       NULL /* sychronous */);
-                DCHECK(rc, "Failed to get local container handle");
-
-                memmove(&hce->seq, buffer + size, sizeof hce->seq);
-        }
+        MPI_CHECK(MPI_Bcast(info, sizeof *info, MPI_BYTE, 0, param->testComm),
+                  "Failed to broadcast container info");
 }
 
 static void ContainerClose(daos_handle_t container, IOR_param_t *param)
@@ -359,7 +252,7 @@ static void ContainerClose(daos_handle_t container, IOR_param_t *param)
         int rc;
 
         if (rank != 0) {
-                rc = daos_container_close(container, NULL /* synchronous */);
+                rc = dsr_co_close(container, NULL /* ev */);
                 DCHECK(rc, "Failed to close container");
         }
 
@@ -368,45 +261,52 @@ static void ContainerClose(daos_handle_t container, IOR_param_t *param)
                   "Failed to synchronize processes");
 
         if (rank == 0) {
-                rc = daos_container_close(container, NULL /* synchronous */);
+                rc = dsr_co_close(container, NULL /* ev */);
                 DCHECK(rc, "Failed to close container");
         }
 }
 
 static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
-                       IOR_param_t *param)
+                       daos_epoch_t epoch, IOR_param_t *param)
 {
         daos_obj_id_t oid;
-        unsigned int  mode;
-        int           onum;
+        unsigned int  flags;
         int           rc;
 
-        /*
-         * Map the process to an object number in [0, param->daos_n_objects).
-         */
-        onum = rank % param->daos_n_objects;
+        oid.hi = 0;
+        oid.mid = 0;
+        oid.lo = 1;
+        dsr_objid_generate(&oid, objectClass);
 
-        /*
-         * Map the object number to a shard and an object ID.
-         */
-        oid.o_id_hi = onum % param->daos_n_shards;
-        oid.o_id_lo = onum / param->daos_n_shards;
+        if (rank == 0) {
+#if 0
+                daos_oclass_attr_t attr = {
+                        .ca_schema              = DAOS_OS_STRIPED,
+                        .ca_resil_degree        = 0,
+                        .ca_resil               = DAOS_RES_REPL,
+                        .ca_nstripes            = 4,
+                        .u.repl                 = {
+                                .r_method       = 0,
+                                .r_num          = 2
+                        }
+                };
 
-        mode = DAOS_OBJ_IO_SEQ;
-        if (param->open == WRITE) {
-                mode |= DAOS_OBJ_RW;
-                if (!param->useO_DIRECT)
-                        mode |= DAOS_OBJ_EXCL;
-        } else {
-                mode |= DAOS_OBJ_RO;
+                rc = dsr_oclass_register(container, objectClass, &attr,
+                                         NULL /* ev */);
+                DCHECK(rc, "Failed to register object class");
+#endif
+
+                rc = dsr_obj_declare(container, oid, epoch, NULL /* oa */,
+                                     NULL /* ev */);
+                DCHECK(rc, "Failed to declare object");
         }
 
-        if (param->verbose >= VERBOSE_2)
-                printf("process %d opening object <%llu, %llu> with mode %#x\n",
-                       rank, oid.o_id_hi, oid.o_id_lo, mode);
+        if (param->open == WRITE)
+                flags = DAOS_OO_RW;
+        else
+                flags = DAOS_OO_RO;
 
-        rc = daos_object_open(container, oid, mode, object,
-                              NULL /* synchronous */);
+        rc = dsr_obj_open(container, oid, epoch, flags, object, NULL /* ev */);
         DCHECK(rc, "Failed to open object");
 }
 
@@ -414,7 +314,7 @@ static void ObjectClose(daos_handle_t object)
 {
         int rc;
 
-        rc = daos_object_close(object, NULL /* synchronous */);
+        rc = dsr_obj_close(object, NULL /* ev */);
         DCHECK(rc, "Failed to close object");
 }
 
@@ -425,31 +325,57 @@ static void AIOInit(IOR_param_t *param)
         int         rc;
 
         rc = posix_memalign((void **) &buffers, sysconf(_SC_PAGESIZE),
-                            param->transferSize * param->daos_n_aios);
-        if (rc != 0)
-                ERR("Failed to allocate buffer array");
+                            param->transferSize * param->daosAios);
+        DCHECK(rc, "Failed to allocate buffer array");
 
-        for (i = 0; i < param->daos_n_aios; i++) {
+        for (i = 0; i < param->daosAios; i++) {
                 aio = malloc(sizeof *aio);
                 if (aio == NULL)
                         ERR("Failed to allocate aio array");
 
-                rc = daos_event_init(&aio->a_event, eventQueue,
-                                     NULL /* orphan */);
-                DCHECK(rc, "Failed to initialize event for aio[%d]", i);
+                memset(aio, 0, sizeof *aio);
 
-                aio->a_buffer = buffers + param->transferSize * i;
+                aio->a_dkey.iov_buf = aio->a_dkeyBuf;
+                aio->a_dkey.iov_buf_len = sizeof aio->a_dkeyBuf;
+
+                aio->a_recx.rx_rsize = param->transferSize;
+                aio->a_recx.rx_nr = 1;
+
+                aio->a_csum.cs_csum = &aio->a_csumBuf;
+                aio->a_csum.cs_buf_len = sizeof aio->a_csumBuf;
+                aio->a_csum.cs_len = aio->a_csum.cs_buf_len;
+
+                aio->a_epochRange.epr_hi = DAOS_EPOCH_MAX;
+
+                aio->a_iod.vd_name.iov_buf = "data";
+                aio->a_iod.vd_name.iov_buf_len =
+                        strlen(aio->a_iod.vd_name.iov_buf) + 1;
+                aio->a_iod.vd_name.iov_len = aio->a_iod.vd_name.iov_buf_len;
+                aio->a_iod.vd_nr = 1;
+                aio->a_iod.vd_recxs = &aio->a_recx;
+                aio->a_iod.vd_csums = &aio->a_csum;
+                aio->a_iod.vd_eprs = &aio->a_epochRange;
+
+                aio->a_iov.iov_buf = buffers + param->transferSize * i;
+                aio->a_iov.iov_buf_len = param->transferSize;
+                aio->a_iov.iov_len = aio->a_iov.iov_buf_len;
+
+                aio->a_sgl.sg_nr.num = 1;
+                aio->a_sgl.sg_iovs = &aio->a_iov;
+
+                rc = daos_event_init(&aio->a_event, eventQueue,
+                                     NULL /* parent */);
+                DCHECK(rc, "Failed to initialize event for aio[%d]", i);
 
                 cfs_list_add(&aio->a_list, &aios);
 
-                if (param->verbose > VERBOSE_2)
-                        printf("[%d] Allocated AIO %p: buffer %p\n", rank, aio,
-                               aio->a_buffer);
+                INFO(VERBOSE_3, param, "Allocated AIO %p: buffer %p\n", aio,
+                     aio->a_iov.iov_buf);
         }
 
-        nAios = param->daos_n_aios;
+        nAios = param->daosAios;
 
-        events = malloc((sizeof *events) * param->daos_n_aios);
+        events = malloc((sizeof *events) * param->daosAios);
         if (events == NULL)
                 ERR("Failed to allocate events array");
 }
@@ -462,9 +388,8 @@ static void AIOFini(IOR_param_t *param)
         free(events);
 
         cfs_list_for_each_entry_safe(aio, tmp, &aios, a_list) {
-                if (param->verbose > VERBOSE_2)
-                        printf("[%d] Freeing AIO %p: buffer %p\n", rank, aio,
-                               aio->a_buffer);
+                INFO(VERBOSE_3, param, "Freeing AIO %p: buffer %p\n", aio,
+                     aio->a_iov.iov_buf);
                 cfs_list_del_init(&aio->a_list);
                 daos_event_fini(&aio->a_event);
                 free(aio);
@@ -479,10 +404,10 @@ static void AIOWait(IOR_param_t *param)
         int         i;
         int         rc;
 
-        rc = daos_eq_poll(eventQueue, 0, DAOS_EQ_WAIT, param->daos_n_aios,
+        rc = daos_eq_poll(eventQueue, 0, DAOS_EQ_WAIT, param->daosAios,
                           events);
         DCHECK(rc, "Failed to poll event queue");
-        assert(rc <= param->daos_n_aios - nAios);
+        assert(rc <= param->daosAios - nAios);
 
         for (i = 0; i < rc; i++) {
                 aio = (struct aio *)
@@ -490,20 +415,83 @@ static void AIOWait(IOR_param_t *param)
                        (char *) (&((struct aio *) 0)->a_event));
 
                 DCHECK(aio->a_event.ev_error, "Failed to transfer (%lu, %lu)",
-                       aio->a_iod.iod_frag[0].if_offset,
-                       aio->a_iod.iod_frag[0].if_nob);
+                       aio->a_iod.vd_recxs->rx_idx,
+                       aio->a_iod.vd_recxs->rx_nr);
 
                 cfs_list_move(&aio->a_list, &aios);
                 nAios++;
 
-                if (param->verbose > VERBOSE_2)
-                        printf("[%d] Completed AIO %p: buffer %p\n", rank, aio,
-                               aio->a_buffer);
+                if (param->verbose >= VERBOSE_3)
+                INFO(VERBOSE_3, param, "Completed AIO %p: buffer %p\n", aio,
+                     aio->a_iov.iov_buf);
         }
 
-        if (param->verbose > VERBOSE_2)
-                printf("[%d] Found %d completed AIOs (%d free %d busy)\n",
-                       rank, rc, nAios, param->daos_n_aios - nAios);
+        INFO(VERBOSE_3, param, "Found %d completed AIOs (%d free %d busy)\n",
+             rc, nAios, param->daosAios - nAios);
+}
+
+static void DAOS_Init(IOR_param_t *param)
+{
+        int rc;
+
+        if (param->filePerProc)
+                ERR("'filePerProc' not yet supported");
+        if (param->daosStripeSize % param->transferSize != 0)
+                ERR("'daosStripeSize' must be a multiple of 'transferSize'");
+        if (param->transferSize % param->daosRecordSize != 0)
+                ERR("'transferSize' must be a multiple of 'daosRecordSize'");
+
+        rc = dsr_init();
+        DCHECK(rc, "Failed to initialize daos");
+
+        rc = daos_eq_create(&eventQueue);
+        DCHECK(rc, "Failed to create event queue");
+
+        if (rank == 0) {
+                uuid_t           uuid;
+                daos_rank_t      rank = 0;
+                daos_rank_list_t ranks;
+
+                if (strlen(param->daosPool) == 0)
+                        ERR("'daosPool' must be specified");
+
+                INFO(VERBOSE_2, param, "Connecting to pool %s\n",
+                     param->daosPool);
+
+                rc = uuid_parse(param->daosPool, uuid);
+                DCHECK(rc, "Failed to parse 'daosPool': %s", param->daosPool);
+                ranks.rl_nr.num = 1;
+                ranks.rl_nr.num_out = 0;
+                ranks.rl_ranks = &rank;
+
+                rc = dsr_pool_connect(uuid, NULL /* grp */, &ranks,
+                                      DAOS_PC_EX, NULL /* failed */, &pool,
+                                      &poolInfo, NULL /* ev */);
+                DCHECK(rc, "Failed to connect to pool %s", param->daosPool);
+        }
+
+        HandleDistribute(&pool, POOL_HANDLE, param);
+
+        MPI_CHECK(MPI_Bcast(&poolInfo, sizeof poolInfo, MPI_BYTE, 0,
+                            param->testComm),
+                  "Failed to bcast pool info");
+
+        if (param->daosStripeCount == -1)
+                param->daosStripeCount = poolInfo.pi_ntargets * 64UL;
+}
+
+static void DAOS_Fini(IOR_param_t *param)
+{
+        int rc;
+
+        rc = dsr_pool_disconnect(pool, NULL /* ev */);
+        DCHECK(rc, "Failed to disconnect from pool %s", param->daosPool);
+
+        rc = daos_eq_destroy(eventQueue, 0 /* flags */);
+        DCHECK(rc, "Failed to destroy event queue");
+
+        rc = dsr_fini();
+        DCHECK(rc, "Failed to finalize daos");
 }
 
 static void *DAOS_Create(char *testFileName, IOR_param_t *param)
@@ -514,120 +502,49 @@ static void *DAOS_Create(char *testFileName, IOR_param_t *param)
 static void *DAOS_Open(char *testFileName, IOR_param_t *param)
 {
         struct fileDescriptor *fd;
-        char                  *dir;
-
-        if (!initialized) {
-                Init();
-                initialized = 1;
-        }
-
-        dir = path_get_dir(testFileName);
-        if (dir == NULL)
-                ERR("Failed to get path directory");
-
-        SysInfoInit(dir);
-
-        if (param->daos_n_targets == -1)
-                param->daos_n_targets = nTargets;
-        else if (param->daos_n_targets > nTargets)
-                ERR("'daosntargets' must <= the number of all targets");
-
-        if (param->daos_n_shards == -1)
-                param->daos_n_shards = param->daos_n_targets;
-
-        if (param->daos_n_objects == -1)
-                param->daos_n_objects = param->numTasks;
-
-        free(dir);
+        daos_epoch_t           ghce;
 
         fd = malloc(sizeof *fd);
         if (fd == NULL)
                 ERR("Failed to allocate fd");
 
-        /*
-         * If param->open is not WRITE, the container must be created by a
-         * "symmetrical" write session first.
-         */
-        ContainerOpen(testFileName, param, &fd->container, &fd->hce);
+        ContainerOpen(testFileName, param, &fd->container, &fd->containerInfo);
 
+        ghce = fd->containerInfo.ci_epoch_state.es_glb_hce;
         if (param->open == WRITE) {
-                if (param->daos_epoch == 0)
-                        fd->epoch.seq = fd->hce.seq + 1;
-                else if (param->daos_epoch <= fd->hce.seq)
+                int rc;
+
+                if (param->daosEpoch == 0)
+                        fd->epoch = ghce + 1;
+                else if (param->daosEpoch <= ghce)
                         ERR("Can't modify committed epoch\n");
                 else
-                        fd->epoch.seq = param->daos_epoch;
+                        fd->epoch = param->daosEpoch;
+
+                rc = dsr_epoch_hold(fd->container, &fd->epoch, NULL /* state */,
+                                    NULL /* ev */);
+                DCHECK(rc, "Failed to hold epoch");
         } else {
-                if (param->daos_epoch == 0) {
-                        if (param->daos_wait == 0)
-                                fd->epoch.seq = fd->hce.seq;
+                if (param->daosEpoch == 0) {
+                        if (param->daosWait == 0)
+                                fd->epoch = ghce;
                         else
-                                fd->epoch.seq = param->daos_wait;
-                } else if (param->daos_epoch > fd->hce.seq) {
+                                fd->epoch = param->daosWait;
+                } else if (param->daosEpoch > ghce) {
                         ERR("Can't read uncommitted epoch\n");
                 } else {
-                        fd->epoch.seq = param->daos_epoch;
+                        fd->epoch = param->daosEpoch;
                 }
         }
 
-        if (rank == 0 && param->verbose > VERBOSE_1)
-                printf("[%d] Accessing epoch %lu\n", rank, fd->epoch.seq);
+        if (rank == 0)
+                INFO(VERBOSE_2, param, "Accessing epoch %lu\n", fd->epoch);
 
-        ObjectOpen(fd->container, &fd->object, param);
+        ObjectOpen(fd->container, &fd->object, fd->epoch, param);
 
         AIOInit(param);
 
         return fd;
-}
-
-/*
- * Map IOR file offset param->offset to a DAOS object offset.
- */
-static IOR_offset_t OffsetMap(IOR_param_t *param)
-{
-        IOR_offset_t segmentSize;
-        IOR_offset_t segment;
-        IOR_offset_t offset;
-
-        assert(!param->filePerProc);
-        assert(!param->randomOffset);
-        assert(!param->reorderTasks);
-        assert(!param->reorderTasksRandom);
-
-        segmentSize = param->blockSize * param->numTasks;
-        segment = param->offset / segmentSize;
-
-        /*
-         * Map to continuous address space [0, blockSize * segmentCount).
-         */
-        offset = param->offset - (segmentSize - param->blockSize) * segment -
-                 param->blockSize * rank;
-
-        if (param->daos_n_objects <= param->numTasks) {
-                IOR_offset_t segmentSizeInObject;
-                int          tasksPerObject;
-                int          rankInObject;
-
-                assert(param->numTasks % param->daos_n_objects == 0);
-                tasksPerObject = param->numTasks / param->daos_n_objects;
-                rankInObject = rank / param->daos_n_objects;
-                segmentSizeInObject = param->blockSize * tasksPerObject;
-
-                /*
-                 * Map to in-object segment size.
-                 */
-                offset = offset +
-                         (segmentSizeInObject - param->blockSize) * segment +
-                         param->blockSize * rankInObject;
-        } else {
-                assert(0); /* XXX */
-        }
-
-        if (param->verbose >= VERBOSE_3)
-                printf("[%d] Mapped %llu to %llu\n", rank,
-                       (unsigned long long) param->offset, offset);
-
-        return offset;
 }
 
 static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
@@ -636,9 +553,11 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         struct fileDescriptor *fd = file;
         struct aio            *aio;
         daos_off_t             offset;
+        uint64_t               stripe;
         int                    rc;
 
-        offset = OffsetMap(param);
+        assert(length == param->transferSize);
+        assert(param->offset % length == 0);
 
         /*
          * Find an available AIO descriptor.  If none, wait for one.
@@ -649,12 +568,13 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         cfs_list_move_tail(&aio->a_list, &aios);
         nAios--;
 
-        aio->a_iod.iod_nfrag = 1;
-        aio->a_iod.iod_frag[0].if_offset = offset;
-        aio->a_iod.iod_frag[0].if_nob = length;
-        aio->a_mmd.mmd_nfrag = 1;
-        aio->a_mmd.mmd_frag[0].mf_addr = aio->a_buffer;
-        aio->a_mmd.mmd_frag[0].mf_nob = length;
+        stripe = (param->offset / param->daosStripeSize) %
+                 param->daosStripeCount;
+        rc = snprintf(aio->a_dkeyBuf, sizeof aio->a_dkeyBuf, "%lu", stripe);
+        assert(rc < sizeof aio->a_dkeyBuf);
+        aio->a_dkey.iov_len = strlen(aio->a_dkeyBuf) + 1;
+        aio->a_recx.rx_idx = param->offset / param->daosRecordSize;
+        aio->a_epochRange.epr_lo = fd->epoch;
 
         /*
          * If the data written will be checked later, we have to copy in valid
@@ -662,31 +582,28 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
          * checking purposes, poison the buffer first.
          */
         if (access == WRITE && param->checkWrite)
-                memcpy(aio->a_mmd.mmd_frag[0].mf_addr, buffer, length);
+                memcpy(aio->a_iov.iov_buf, buffer, length);
         else if (access == WRITECHECK || access == READCHECK)
-                memset(aio->a_mmd.mmd_frag[0].mf_addr, '#', length);
+                memset(aio->a_iov.iov_buf, '#', length);
 
-        if (param->verbose > VERBOSE_2)
-                printf("[%d] Starting AIO %p (%d free %d busy): %d "
-                       "if %lu <%llu, %llu> mf %lu <%p, %lu>\n", rank, aio,
-                       nAios, param->daos_n_aios - nAios, access,
-                       aio->a_iod.iod_nfrag,
-                       (unsigned long long) aio->a_iod.iod_frag[0].if_offset,
-                       (unsigned long long) aio->a_iod.iod_frag[0].if_nob,
-                       aio->a_mmd.mmd_nfrag,
-                       aio->a_mmd.mmd_frag[0].mf_addr,
-                       (unsigned long long) aio->a_mmd.mmd_frag[0].mf_nob);
+        INFO(VERBOSE_3, param, "Starting AIO %p (%d free %d busy): access %d "
+             "dkey '%s' iod <%llu, %llu> sgl <%p, %lu>\n", aio, nAios,
+             param->daosAios - nAios, access, (char *) aio->a_dkey.iov_buf,
+             (unsigned long long) aio->a_iod.vd_recxs->rx_idx,
+             (unsigned long long) aio->a_iod.vd_recxs->rx_nr,
+             aio->a_sgl.sg_iovs->iov_buf,
+             (unsigned long long) aio->a_sgl.sg_iovs->iov_buf_len);
 
         if (access == WRITE) {
-                rc = daos_object_write(fd->object, fd->epoch,
-                                       &aio->a_mmd, &aio->a_iod,
-                                       &aio->a_event);
-                DCHECK(rc, "Failed to start write operation");
+                rc = dsr_obj_update(fd->object, fd->epoch, &aio->a_dkey,
+                                    1 /* nr */, &aio->a_iod, &aio->a_sgl,
+                                    &aio->a_event);
+                DCHECK(rc, "Failed to start update operation");
         } else {
-                rc = daos_object_read(fd->object, fd->epoch,
-                                      &aio->a_mmd, &aio->a_iod,
-                                      &aio->a_event);
-                DCHECK(rc, "Failed to start read operation");
+                rc = dsr_obj_fetch(fd->object, fd->epoch, &aio->a_dkey,
+                                   1 /* nr */, &aio->a_iod, &aio->a_sgl,
+                                   NULL /* maps */, &aio->a_event);
+                DCHECK(rc, "Failed to start fetch operation");
         }
 
         /*
@@ -695,9 +612,9 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
          * don't have to return valid data as WriteOrRead() doesn't care.
          */
         if (access == WRITECHECK || access == READCHECK) {
-                while (param->daos_n_aios - nAios > 0)
+                while (param->daosAios - nAios > 0)
                         AIOWait(param);
-                memcpy(buffer, aio->a_mmd.mmd_frag[0].mf_addr, length);
+                memcpy(buffer, aio->a_sgl.sg_iovs->iov_buf, length);
         }
 
         return length;
@@ -708,53 +625,50 @@ static void DAOS_Close(void *file, IOR_param_t *param)
         struct fileDescriptor *fd = file;
         int                    rc;
 
-        while (param->daos_n_aios - nAios > 0)
+        while (param->daosAios - nAios > 0)
                 AIOWait(param);
         AIOFini(param);
 
         ObjectClose(fd->object);
 
-        if (param->open == WRITE && !param->daos_writeonly) {
-                rc = daos_shard_flush(fd->container, fd->epoch,
-                                      rank % param->daos_n_shards, NULL);
-                DCHECK(rc, "Failed to close object");
-
+        if (param->open == WRITE && !param->daosWriteOnly) {
+                /* Wait for everybody for to complete the writes. */
                 MPI_CHECK(MPI_Barrier(param->testComm),
                           "Failed to synchronize processes");
 
                 if (rank == 0) {
-                        rc = daos_epoch_commit(fd->container, fd->epoch,
-                                               1 /* sync */, NULL,
-                                               NULL /* synchronous */);
+                        INFO(VERBOSE_2, param, "Flushing epoch %lu\n",
+                             fd->epoch);
+
+                        rc = dsr_epoch_flush(fd->container, fd->epoch,
+                                             NULL /* state */, NULL /* ev */);
+                        DCHECK(rc, "Failed to flush epoch");
+
+                        INFO(VERBOSE_2, param, "Committing epoch %lu\n",
+                             fd->epoch);
+
+                        rc = dsr_epoch_commit(fd->container, fd->epoch,
+                                              NULL /* state */, NULL /* ev */);
                         DCHECK(rc, "Failed to commit object write");
                 }
-
-                fd->hce = fd->epoch;
         }
 
         ContainerClose(fd->container, param);
 
         free(fd);
-
-        SysInfoFini();
-
-        if (initialized) {
-                Fini();
-                initialized = 0;
-        }
 }
 
 static void DAOS_Delete(char *testFileName, IOR_param_t *param)
 {
-        int rc;
+        uuid_t uuid;
+        int    rc;
 
-        if (!initialized) {
-                Init();
-                initialized = 1;
-        }
+        rc = uuid_parse(testFileName, uuid);
+        DCHECK(rc, "Failed to parse 'testFile': %s", testFileName);
 
-        rc = daos_container_unlink(testFileName, NULL /* synchronous */);
-        DCHECK(rc, "Failed to unlink container");
+        rc = dsr_co_destroy(pool, uuid, 0 /* !force */, NULL /* ev */);
+        if (rc != -DER_NONEXIST)
+                DCHECK(rc, "Failed to destroy container %s", testFileName);
 }
 
 static void DAOS_SetVersion(IOR_param_t *test)

@@ -127,13 +127,14 @@ typedef struct
     int lustre_ignore_locks;
 
     /* DAOS variables */
-    int daos_n_objects;
-    int daos_n_shards;
-    int daos_n_targets;
-    int daos_n_aios;                 /* max number of concurrent async I/Os */
-    int daos_writeonly;              /* write only, no flush and commit */
-    unsigned long daos_epoch;        /* epoch to access */
-    unsigned long daos_wait;         /* epoch to wait for before reading */
+    char daosPool[37];               /* pool UUID */
+    int daosRecordSize;              /* size of akey record (i.e., rx_rsize) */
+    int daosStripeSize;
+    unsigned long daosStripeCount;
+    int daosAios;                    /* max number of concurrent async I/Os */
+    int daosWriteOnly;               /* write only, no flush and commit */
+    unsigned long daosEpoch;         /* epoch to access */
+    unsigned long daosWait;          /* epoch to wait for before reading */
 
     /* gpfs variables */
     int gpfs_hint_access;          /* use gpfs "access range" hint */
@@ -142,25 +143,22 @@ typedef struct
 
     int id;                          /* test's unique ID */
     int intraTestBarriers;           /* barriers between open/op and op/close */
-
-    int id;                          /* test's unique ID */
-    int intraTestBarriers;           /* barriers between open/op and op/close */
 } IOR_param_t;
 
 /* each pointer is to an array, each of length equal to the number of
    repetitions in the test */
 typedef struct {
-	double *writeTime;
-	double *readTime;
-	IOR_offset_t *aggFileSizeFromStat;
-	IOR_offset_t *aggFileSizeFromXfer;
-	IOR_offset_t *aggFileSizeForBW;
+        double *writeTime;
+        double *readTime;
+        IOR_offset_t *aggFileSizeFromStat;
+        IOR_offset_t *aggFileSizeFromXfer;
+        IOR_offset_t *aggFileSizeForBW;
 } IOR_results_t;
 
 /* define the queuing structure for the test parameters */
 typedef struct IOR_test_t {
         IOR_param_t params;
-	IOR_results_t *results;
+        IOR_results_t *results;
         struct IOR_test_t *next;
 } IOR_test_t;
 

@@ -90,6 +90,17 @@ AM_COND_IF([USE_NCMPI_AIORI],[
         AC_DEFINE([USE_NCMPI_AIORI], [], [Build NCMPI backend AIORI])
 ])
 
+# DAOS support
+AC_ARG_WITH([daos],
+        [AS_HELP_STRING([--with-daos],
+           [support IO with DAOS backend @<:@default=no@:>@])],
+        [],
+        [with_daos=no])
+AM_CONDITIONAL([USE_DAOS_AIORI], [test x$with_daos = xyes])
+AM_COND_IF([USE_DAOS_AIORI],[
+        AC_DEFINE([USE_DAOS_AIORI], [], [Build DAOS backend AIORI])
+])
+
 # Enable building "IOR", in all capitals
 AC_ARG_ENABLE([caps],
         [AS_HELP_STRING([--enable-caps],

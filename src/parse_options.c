@@ -278,20 +278,22 @@ void DecodeDirective(char *line, IOR_param_t *params)
 		RecalculateExpectedFileSize(params);
         } else if (strcasecmp(option, "summaryalways") == 0) {
                 params->summary_every_test = atoi(value);
-        } else if (strcasecmp(option, "daosobjects") == 0) {
-                params->daos_n_objects = atoi(value);
-        } else if (strcasecmp(option, "daosshards") == 0) {
-                params->daos_n_shards = atoi(value);
-        } else if (strcasecmp(option, "daostargets") == 0) {
-                params->daos_n_targets = atoi(value);
+        } else if (strcasecmp(option, "daospool") == 0) {
+                strcpy(params->daosPool, value);
+        } else if (strcasecmp(option, "daosrecordsize") == 0) {
+                params->daosRecordSize = StringToBytes(value);
+        } else if (strcasecmp(option, "daosstripesize") == 0) {
+                params->daosStripeSize = StringToBytes(value);
+        } else if (strcasecmp(option, "daosstripecount") == 0) {
+                params->daosStripeCount = atoi(value);
         } else if (strcasecmp(option, "daosaios") == 0) {
-                params->daos_n_aios = atoi(value);
+                params->daosAios = atoi(value);
         } else if (strcasecmp(option, "daosepoch") == 0) {
-                params->daos_epoch = atoi(value);
+                params->daosEpoch = atoi(value);
         } else if (strcasecmp(option, "daoswait") == 0) {
-                params->daos_wait = atoi(value);
+                params->daosWait = atoi(value);
         } else if (strcasecmp(option, "daoswriteonly") == 0) {
-                params->daos_writeonly = atoi(value);
+                params->daosWriteOnly = atoi(value);
         } else {
                 if (rank == 0)
                         fprintf(stdout, "Unrecognized parameter \"%s\"\n",

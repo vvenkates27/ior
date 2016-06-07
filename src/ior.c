@@ -61,7 +61,9 @@ ior_aiori_t *available_aiori[] = {
 #ifdef USE_NCMPI_AIORI
         &ncmpi_aiori,
 #endif
+#ifdef USE_DAOS_AIORI
         &daos_aiori,
+#endif
         NULL
 };
 
@@ -155,7 +157,9 @@ int main(int argc, char **argv)
 
 	DestroyTests(tests_head);
 
+#if 0
         MPI_CHECK(MPI_Finalize(), "cannot finalize MPI");
+#endif
 
         return (totalErrorCount);
 }
@@ -188,10 +192,10 @@ void init_IOR_Param_t(IOR_param_t * p)
         p->testComm = MPI_COMM_WORLD;
         p->setAlignment = 1;
         p->lustre_start_ost = -1;
-        p->daos_n_objects = -1;
-        p->daos_n_shards = -1;
-        p->daos_n_targets = -1;
-        p->daos_n_aios = 1;
+        p->daosRecordSize = 262144;
+        p->daosStripeSize = 524288;
+        p->daosStripeCount = -1;
+        p->daosAios = 1;
 }
 
 /*
@@ -1518,7 +1522,6 @@ static void ShowSetup(IOR_param_t *params)
         printf("\trepetitions        = %d\n", params->repetitions);
         printf("\txfersize           = %s\n",
                 HumanReadable(params->transferSize, BASE_TWO));
-        printf("\taios               = %d\n", params->daos_n_aios);
         printf("\tblocksize          = %s\n",
                 HumanReadable(params->blockSize, BASE_TWO));
         printf("\taggregate filesize = %s\n",
@@ -1971,6 +1974,10 @@ static void TestIoSys(IOR_test_t *test)
         /* bind I/O calls to specific API */
         AioriBind(params->api);
 
+	/* initialize API session */
+	if (backend->init != NULL)
+		backend->init(params);
+
         /* show test setup */
         if (rank == 0 && verbose >= VERBOSE_0)
                 ShowSetup(params);
@@ -2233,6 +2240,10 @@ static void TestIoSys(IOR_test_t *test)
                 params->errorFound = FALSE;
                 rankOffset = 0;
         }
+
+	/* finalize API session */
+	if (backend->fini != NULL)
+		backend->fini(params);
 
         MPI_CHECK(MPI_Comm_free(&testComm), "MPI_Comm_free() error");
 
