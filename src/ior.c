@@ -157,9 +157,7 @@ int main(int argc, char **argv)
 
 	DestroyTests(tests_head);
 
-#if 0
         MPI_CHECK(MPI_Finalize(), "cannot finalize MPI");
-#endif
 
         return (totalErrorCount);
 }
