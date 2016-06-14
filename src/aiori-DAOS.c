@@ -521,9 +521,14 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
                 else
                         fd->epoch = param->daosEpoch;
 
-                rc = dsr_epoch_hold(fd->container, &fd->epoch, NULL /* state */,
-                                    NULL /* ev */);
-                DCHECK(rc, "Failed to hold epoch");
+                if (rank == 0) {
+                        daos_epoch_t e = fd->epoch;
+
+                        rc = dsr_epoch_hold(fd->container, &fd->epoch,
+                                            NULL /* state */, NULL /* ev */);
+                        DCHECK(rc, "Failed to hold epoch");
+                        assert(fd->epoch == e);
+                }
         } else {
                 if (param->daosEpoch == 0) {
                         if (param->daosWait == 0)
