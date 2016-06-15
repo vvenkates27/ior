@@ -96,7 +96,7 @@ static unsigned char      *buffers;
 static int                 nAios;
 static daos_handle_t       pool = DAOS_HDL_INVAL;
 static daos_pool_info_t    poolInfo;
-static daos_oclass_id_t    objectClass = 1;
+static daos_oclass_id_t    objectClass = DSR_OC_LARGE_RW;
 
 static CFS_LIST_HEAD(aios);
 
@@ -191,7 +191,7 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
 
                 if (param->open == WRITE &&
                     param->useExistingTestFile == FALSE) {
-                        INFO(VERBOSE_2, param, "Creating container %s\n",
+                        INFO(VERBOSE_2, param, "Creating container %s",
                              testFileName);
 
                         rc = dsr_co_create(pool, uuid, NULL /* ev */);
@@ -199,7 +199,7 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                                testFileName);
                 }
 
-                INFO(VERBOSE_2, param, "Openning container %s\n", testFileName);
+                INFO(VERBOSE_2, param, "Openning container %s", testFileName);
 
                 if (param->open == WRITE)
                         dFlags = DAOS_COO_RW;
@@ -210,13 +210,27 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                                  container, info, NULL /* ev */);
                 DCHECK(rc, "Failed to open container %s", testFileName);
 
+                INFO(VERBOSE_2, param, "Container epoch state:");
+                INFO(VERBOSE_2, param, "   HCE: %lu",
+                     info->ci_epoch_state.es_hce);
+                INFO(VERBOSE_2, param, "   LRE: %lu",
+                     info->ci_epoch_state.es_lre);
+                INFO(VERBOSE_2, param, "   LHE: %lu (%lx)",
+                     info->ci_epoch_state.es_lhe, info->ci_epoch_state.es_lhe);
+                INFO(VERBOSE_2, param, "  GHCE: %lu",
+                     info->ci_epoch_state.es_glb_hce);
+                INFO(VERBOSE_2, param, "  GLRE: %lu",
+                     info->ci_epoch_state.es_glb_lre);
+                INFO(VERBOSE_2, param, "  GLHE: %lu",
+                     info->ci_epoch_state.es_glb_hpce);
+
 #if 0
                 if (param->open != WRITE && param->daosWait != 0) {
                         daos_epoch_t e;
 
                         e = param->daosWait;
 
-                        INFO(VERBOSE_2, param, "Waiting for epoch %lu\n", e);
+                        INFO(VERBOSE_2, param, "Waiting for epoch %lu", e);
 
                         rc = daos_epoch_wait(*container, &e,
                                              NULL /* ignore HLE */,
@@ -224,21 +238,27 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                         DCHECK(rc, "Failed to wait for epoch %lu",
                                param->daosWait);
                 }
-#endif
 
-                INFO(VERBOSE_2, param, "Container epoch state: \n");
-                INFO(VERBOSE_2, param, "   HCE: %lu\n",
-                     info->ci_epoch_state.es_hce);
-                INFO(VERBOSE_2, param, "   LRE: %lu\n",
-                     info->ci_epoch_state.es_lre);
-                INFO(VERBOSE_2, param, "   LHE: %lu (%lx)\n",
-                     info->ci_epoch_state.es_lhe, info->ci_epoch_state.es_lhe);
-                INFO(VERBOSE_2, param, "  GHCE: %lu\n",
-                     info->ci_epoch_state.es_glb_hce);
-                INFO(VERBOSE_2, param, "  GLRE: %lu\n",
-                     info->ci_epoch_state.es_glb_lre);
-                INFO(VERBOSE_2, param, "  GLHE: %lu\n",
-                     info->ci_epoch_state.es_glb_hpce);
+                if (param->open == WRITE &&
+                    param->useExistingTestFile == FALSE) {
+                        daos_oclass_attr_t attr = {
+                                .ca_schema              = DAOS_OS_STRIPED,
+                                .ca_resil_degree        = 0,
+                                .ca_resil               = DAOS_RES_REPL,
+                                .ca_grp_nr              = 4,
+                                .u.repl                 = {
+                                        .r_method       = 0,
+                                        .r_num          = 2
+                                }
+                        };
+
+                        INFO(VERBOSE_2, param, "Registering object class");
+
+                        rc = dsr_oclass_register(container, objectClass, &attr,
+                                                 NULL /* ev */);
+                        DCHECK(rc, "Failed to register object class");
+                }
+#endif
         }
 
         HandleDistribute(container, CONTAINER_HANDLE, param);
@@ -276,25 +296,11 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
         oid.hi = 0;
         oid.mid = 0;
         oid.lo = 1;
-        dsr_objid_generate(&oid, objectClass);
+        dsr_obj_id_generate(&oid, objectClass);
 
-        if (rank == 0) {
-#if 0
-                daos_oclass_attr_t attr = {
-                        .ca_schema              = DAOS_OS_STRIPED,
-                        .ca_resil_degree        = 0,
-                        .ca_resil               = DAOS_RES_REPL,
-                        .ca_nstripes            = 4,
-                        .u.repl                 = {
-                                .r_method       = 0,
-                                .r_num          = 2
-                        }
-                };
-
-                rc = dsr_oclass_register(container, objectClass, &attr,
-                                         NULL /* ev */);
-                DCHECK(rc, "Failed to register object class");
-#endif
+        if (rank == 0 && param->open == WRITE &&
+            param->useExistingTestFile == FALSE) {
+                INFO(VERBOSE_2, param, "Declaring object");
 
                 rc = dsr_obj_declare(container, oid, epoch, NULL /* oa */,
                                      NULL /* ev */);
@@ -369,7 +375,7 @@ static void AIOInit(IOR_param_t *param)
 
                 cfs_list_add(&aio->a_list, &aios);
 
-                INFO(VERBOSE_3, param, "Allocated AIO %p: buffer %p\n", aio,
+                INFO(VERBOSE_3, param, "Allocated AIO %p: buffer %p", aio,
                      aio->a_iov.iov_buf);
         }
 
@@ -388,7 +394,7 @@ static void AIOFini(IOR_param_t *param)
         free(events);
 
         cfs_list_for_each_entry_safe(aio, tmp, &aios, a_list) {
-                INFO(VERBOSE_3, param, "Freeing AIO %p: buffer %p\n", aio,
+                INFO(VERBOSE_3, param, "Freeing AIO %p: buffer %p", aio,
                      aio->a_iov.iov_buf);
                 cfs_list_del_init(&aio->a_list);
                 daos_event_fini(&aio->a_event);
@@ -422,12 +428,12 @@ static void AIOWait(IOR_param_t *param)
                 nAios++;
 
                 if (param->verbose >= VERBOSE_3)
-                INFO(VERBOSE_3, param, "Completed AIO %p: buffer %p\n", aio,
+                INFO(VERBOSE_3, param, "Completed AIO %p: buffer %p", aio,
                      aio->a_iov.iov_buf);
         }
 
-        INFO(VERBOSE_3, param, "Found %d completed AIOs (%d free %d busy)\n",
-             rc, nAios, param->daosAios - nAios);
+        INFO(VERBOSE_3, param, "Found %d completed AIOs (%d free %d busy)", rc,
+             nAios, param->daosAios - nAios);
 }
 
 static void DAOS_Init(IOR_param_t *param)
@@ -455,7 +461,7 @@ static void DAOS_Init(IOR_param_t *param)
                 if (strlen(param->daosPool) == 0)
                         ERR("'daosPool' must be specified");
 
-                INFO(VERBOSE_2, param, "Connecting to pool %s\n",
+                INFO(VERBOSE_2, param, "Connecting to pool %s",
                      param->daosPool);
 
                 rc = uuid_parse(param->daosPool, uuid);
@@ -512,23 +518,12 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
 
         ghce = fd->containerInfo.ci_epoch_state.es_glb_hce;
         if (param->open == WRITE) {
-                int rc;
-
                 if (param->daosEpoch == 0)
                         fd->epoch = ghce + 1;
                 else if (param->daosEpoch <= ghce)
                         ERR("Can't modify committed epoch\n");
                 else
                         fd->epoch = param->daosEpoch;
-
-                if (rank == 0) {
-                        daos_epoch_t e = fd->epoch;
-
-                        rc = dsr_epoch_hold(fd->container, &fd->epoch,
-                                            NULL /* state */, NULL /* ev */);
-                        DCHECK(rc, "Failed to hold epoch");
-                        assert(fd->epoch == e);
-                }
         } else {
                 if (param->daosEpoch == 0) {
                         if (param->daosWait == 0)
@@ -543,7 +538,19 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
         }
 
         if (rank == 0)
-                INFO(VERBOSE_2, param, "Accessing epoch %lu\n", fd->epoch);
+                INFO(VERBOSE_2, param, "Accessing epoch %lu", fd->epoch);
+
+        if (rank == 0 && param->open == WRITE) {
+                daos_epoch_t e = fd->epoch;
+                int          rc;
+
+                INFO(VERBOSE_2, param, "Holding epoch %lu", fd->epoch);
+
+                rc = dsr_epoch_hold(fd->container, &fd->epoch,
+                                    NULL /* state */, NULL /* ev */);
+                DCHECK(rc, "Failed to hold epoch");
+                assert(fd->epoch == e);
+        }
 
         ObjectOpen(fd->container, &fd->object, fd->epoch, param);
 
@@ -592,7 +599,7 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
                 memset(aio->a_iov.iov_buf, '#', length);
 
         INFO(VERBOSE_3, param, "Starting AIO %p (%d free %d busy): access %d "
-             "dkey '%s' iod <%llu, %llu> sgl <%p, %lu>\n", aio, nAios,
+             "dkey '%s' iod <%llu, %llu> sgl <%p, %lu>", aio, nAios,
              param->daosAios - nAios, access, (char *) aio->a_dkey.iov_buf,
              (unsigned long long) aio->a_iod.vd_recxs->rx_idx,
              (unsigned long long) aio->a_iod.vd_recxs->rx_nr,
@@ -642,14 +649,13 @@ static void DAOS_Close(void *file, IOR_param_t *param)
                           "Failed to synchronize processes");
 
                 if (rank == 0) {
-                        INFO(VERBOSE_2, param, "Flushing epoch %lu\n",
-                             fd->epoch);
+                        INFO(VERBOSE_2, param, "Flushing epoch %lu", fd->epoch);
 
                         rc = dsr_epoch_flush(fd->container, fd->epoch,
                                              NULL /* state */, NULL /* ev */);
                         DCHECK(rc, "Failed to flush epoch");
 
-                        INFO(VERBOSE_2, param, "Committing epoch %lu\n",
+                        INFO(VERBOSE_2, param, "Committing epoch %lu",
                              fd->epoch);
 
                         rc = dsr_epoch_commit(fd->container, fd->epoch,
