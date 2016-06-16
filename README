@@ -40,6 +40,13 @@ run. Otherwise, IOR will create a new container with this UUID.
 In the latter case, one may use uuidgen(1) to generate the UUID
 of the new container.
 
+When benchmarking write performance, one likely do not want
+"-W", which causes the write phase to do one additional memory
+copy for every I/O. This is due to IOR's assumption that when a
+DAOS_Xfer() call returns the buffer may be released. Therefore,
+random data is written when "-W" is absent, while data is copied
+from IOR buffers when "-W" is present.
+
 See doc/USER_GUIDE for all options and directives. Note that not
 all combinations of options are supported.
 
@@ -54,3 +61,8 @@ Examples that should work include:
     -O daospool=<pool_uuid>,daosrecordsize=1m,
     daosstripesize=4m, daosstripecount=256,daosaios=8" does all
     IOR tests and shifts ranks during checkWrite and checkRead.
+
+  - "ior -a DAOS -w -r -o <container_uuid> -b 8g -t 1m -C -O
+    daospool=<pool_uuid>,daosrecordsize=1m,daosstripesize=4m,
+    daosstripecount=256,daosaios=8" may be a base to be tuned
+    for performance benchmarking.
