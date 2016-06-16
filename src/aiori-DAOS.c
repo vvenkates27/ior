@@ -674,10 +674,12 @@ static void DAOS_Delete(char *testFileName, IOR_param_t *param)
         uuid_t uuid;
         int    rc;
 
+        INFO(VERBOSE_2, param, "Deleting container %s", testFileName);
+
         rc = uuid_parse(testFileName, uuid);
         DCHECK(rc, "Failed to parse 'testFile': %s", testFileName);
 
-        rc = dsr_co_destroy(pool, uuid, 0 /* !force */, NULL /* ev */);
+        rc = dsr_co_destroy(pool, uuid, 1 /* force */, NULL /* ev */);
         if (rc != -DER_NONEXIST)
                 DCHECK(rc, "Failed to destroy container %s", testFileName);
 }
