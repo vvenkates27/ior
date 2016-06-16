@@ -305,11 +305,13 @@ void DecodeDirective(char *line, IOR_param_t *params)
 /*
  * Parse a single line, which may contain multiple comma-seperated directives
  */
-void ParseLine(char *line, IOR_param_t * test)
+void ParseLine(const char *line, IOR_param_t * test)
 {
         char *start, *end;
 
-        start = line;
+        start = strdup(line);
+        if (start == NULL)
+                ERR("failed to duplicate line");
         do {
                 end = strchr(start, ',');
                 if (end != NULL)
@@ -317,7 +319,6 @@ void ParseLine(char *line, IOR_param_t * test)
                 DecodeDirective(start, test);
                 start = end + 1;
         } while (end != NULL);
-
 }
 
 /*
