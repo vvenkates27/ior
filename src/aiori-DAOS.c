@@ -276,7 +276,7 @@ static void ContainerClose(daos_handle_t container, IOR_param_t *param)
                 DCHECK(rc, "Failed to close container");
         }
 
-        /* An MPI_Gather() call is probably more appropriate. */
+        /* An MPI_Gather() call would probably be more efficient. */
         MPI_CHECK(MPI_Barrier(param->testComm),
                   "Failed to synchronize processes");
 
@@ -306,6 +306,10 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
                                      NULL /* ev */);
                 DCHECK(rc, "Failed to declare object");
         }
+
+        /* An MPI_Bcast() call would probably be more efficient. */
+        MPI_CHECK(MPI_Barrier(param->testComm),
+                  "Failed to synchronize processes");
 
         if (param->open == WRITE)
                 flags = DAOS_OO_RW;
