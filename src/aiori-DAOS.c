@@ -221,7 +221,7 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                      info->ci_epoch_state.es_glb_hce);
                 INFO(VERBOSE_2, param, "  GLRE: %lu",
                      info->ci_epoch_state.es_glb_lre);
-                INFO(VERBOSE_2, param, "  GLHE: %lu",
+                INFO(VERBOSE_2, param, " GHPCE: %lu",
                      info->ci_epoch_state.es_glb_hpce);
 
 #if 0
