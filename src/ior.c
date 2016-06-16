@@ -297,7 +297,9 @@ static void CheckFileSize(IOR_test_t *test, IOR_offset_t dataMoved, int rep)
                                 1, MPI_LONG_LONG_INT, MPI_SUM, testComm),
                   "cannot total data moved");
 
-        if (strcmp(params->api, "HDF5") != 0 && strcmp(params->api, "NCMPI") != 0) {
+        if (strcmp(params->api, "HDF5") != 0 &&
+            strcmp(params->api, "NCMPI") != 0 &&
+            strcmp(params->api, "DAOS") != 0) {
                 if (verbose >= VERBOSE_0 && rank == 0) {
                         if ((params->expectedAggFileSize
                              != results->aggFileSizeFromXfer[rep])
