@@ -695,9 +695,8 @@ static void DAOS_SetVersion(IOR_param_t *test)
 
 static void DAOS_Fsync(void *file, IOR_param_t *param)
 {
-        /*
-         * Inapplicable at the moment.
-         */
+        while (param->daosAios - nAios > 0)
+                AIOWait(param);
 }
 
 static IOR_offset_t DAOS_GetFileSize(IOR_param_t *test, MPI_Comm testComm,
