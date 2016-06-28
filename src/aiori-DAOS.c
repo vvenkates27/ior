@@ -428,6 +428,11 @@ static void AIOWait(IOR_param_t *param)
                        aio->a_iod.vd_recxs->rx_idx,
                        aio->a_iod.vd_recxs->rx_nr);
 
+                daos_event_fini(&aio->a_event);
+                rc = daos_event_init(&aio->a_event, eventQueue,
+                                     NULL /* parent */);
+                DCHECK(rc, "Failed to reinitialize event for AIO %p", aio);
+
                 cfs_list_move(&aio->a_list, &aios);
                 nAios++;
 
