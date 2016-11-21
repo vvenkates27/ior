@@ -27,7 +27,7 @@
 #include <sys/types.h>
 #include <libgen.h>
 #include <stdbool.h>
-#include <daos_sr.h>
+#include <daos.h>
 
 #include "ior.h"
 #include "aiori.h"
@@ -70,10 +70,10 @@ enum handleType {
 };
 
 struct fileDescriptor {
-        daos_handle_t  container;
-        daos_co_info_t containerInfo;
-        daos_handle_t  object;
-        daos_epoch_t   epoch;
+        daos_handle_t    container;
+        daos_cont_info_t containerInfo;
+        daos_handle_t    object;
+        daos_epoch_t     epoch;
 };
 
 struct aio {
@@ -96,7 +96,7 @@ static unsigned char      *buffers;
 static int                 nAios;
 static daos_handle_t       pool = DAOS_HDL_INVAL;
 static daos_pool_info_t    poolInfo;
-static daos_oclass_id_t    objectClass = DSR_OC_LARGE_RW;
+static daos_oclass_id_t    objectClass = DAOS_OC_LARGE_RW;
 
 static CFS_LIST_HEAD(aios);
 
@@ -137,9 +137,9 @@ static void HandleDistribute(daos_handle_t *handle, enum handleType type,
         if (rank == 0) {
                 /* Get the global handle size. */
                 if (type == POOL_HANDLE)
-                        rc = dsr_pool_local2global(*handle, &global);
+                        rc = daos_pool_local2global(*handle, &global);
                 else
-                        rc = dsr_co_local2global(*handle, &global);
+                        rc = daos_cont_local2global(*handle, &global);
                 DCHECK(rc, "Failed to get global handle size");
         }
 
@@ -153,9 +153,9 @@ static void HandleDistribute(daos_handle_t *handle, enum handleType type,
 
         if (rank == 0) {
                 if (type == POOL_HANDLE)
-                        rc = dsr_pool_local2global(*handle, &global);
+                        rc = daos_pool_local2global(*handle, &global);
                 else
-                        rc = dsr_co_local2global(*handle, &global);
+                        rc = daos_cont_local2global(*handle, &global);
                 DCHECK(rc, "Failed to create global handle");
         }
 
@@ -168,9 +168,9 @@ static void HandleDistribute(daos_handle_t *handle, enum handleType type,
                 global.iov_len = global.iov_buf_len;
 
                 if (type == POOL_HANDLE)
-                        rc = dsr_pool_global2local(global, handle);
+                        rc = daos_pool_global2local(global, handle);
                 else
-                        rc = dsr_co_global2local(pool, global, handle);
+                        rc = daos_cont_global2local(pool, global, handle);
                 DCHECK(rc, "Failed to get local handle");
         }
 
@@ -178,7 +178,7 @@ static void HandleDistribute(daos_handle_t *handle, enum handleType type,
 }
 
 static void ContainerOpen(char *testFileName, IOR_param_t *param,
-                          daos_handle_t *container, daos_co_info_t *info)
+                          daos_handle_t *container, daos_cont_info_t *info)
 {
         int rc;
 
@@ -194,7 +194,7 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                         INFO(VERBOSE_2, param, "Creating container %s",
                              testFileName);
 
-                        rc = dsr_co_create(pool, uuid, NULL /* ev */);
+                        rc = daos_cont_create(pool, uuid, NULL /* ev */);
                         DCHECK(rc, "Failed to create container %s",
                                testFileName);
                 }
@@ -206,8 +206,8 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                 else
                         dFlags = DAOS_COO_RO;
 
-                rc = dsr_co_open(pool, uuid, dFlags, NULL /* failed */,
-                                 container, info, NULL /* ev */);
+                rc = daos_cont_open(pool, uuid, dFlags, container, info,
+                                    NULL /* ev */);
                 DCHECK(rc, "Failed to open container %s", testFileName);
 
                 INFO(VERBOSE_2, param, "Container epoch state:");
@@ -218,11 +218,11 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
                 INFO(VERBOSE_2, param, "   LHE: %lu (%lx)",
                      info->ci_epoch_state.es_lhe, info->ci_epoch_state.es_lhe);
                 INFO(VERBOSE_2, param, "  GHCE: %lu",
-                     info->ci_epoch_state.es_glb_hce);
+                     info->ci_epoch_state.es_ghce);
                 INFO(VERBOSE_2, param, "  GLRE: %lu",
-                     info->ci_epoch_state.es_glb_lre);
+                     info->ci_epoch_state.es_glre);
                 INFO(VERBOSE_2, param, " GHPCE: %lu",
-                     info->ci_epoch_state.es_glb_hpce);
+                     info->ci_epoch_state.es_ghpce);
 
 #if 0
                 if (param->open != WRITE && param->daosWait != 0) {
@@ -254,8 +254,8 @@ static void ContainerOpen(char *testFileName, IOR_param_t *param,
 
                         INFO(VERBOSE_2, param, "Registering object class");
 
-                        rc = dsr_oclass_register(container, objectClass, &attr,
-                                                 NULL /* ev */);
+                        rc = daos_oclass_register(container, objectClass, &attr,
+                                                  NULL /* ev */);
                         DCHECK(rc, "Failed to register object class");
                 }
 #endif
@@ -272,7 +272,7 @@ static void ContainerClose(daos_handle_t container, IOR_param_t *param)
         int rc;
 
         if (rank != 0) {
-                rc = dsr_co_close(container, NULL /* ev */);
+                rc = daos_cont_close(container, NULL /* ev */);
                 DCHECK(rc, "Failed to close container");
         }
 
@@ -281,7 +281,7 @@ static void ContainerClose(daos_handle_t container, IOR_param_t *param)
                   "Failed to synchronize processes");
 
         if (rank == 0) {
-                rc = dsr_co_close(container, NULL /* ev */);
+                rc = daos_cont_close(container, NULL /* ev */);
                 DCHECK(rc, "Failed to close container");
         }
 }
@@ -296,14 +296,14 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
         oid.hi = 0;
         oid.mid = 0;
         oid.lo = 1;
-        dsr_obj_id_generate(&oid, objectClass);
+        daos_obj_id_generate(&oid, objectClass);
 
         if (rank == 0 && param->open == WRITE &&
             param->useExistingTestFile == FALSE) {
                 INFO(VERBOSE_2, param, "Declaring object");
 
-                rc = dsr_obj_declare(container, oid, epoch, NULL /* oa */,
-                                     NULL /* ev */);
+                rc = daos_obj_declare(container, oid, epoch, NULL /* oa */,
+                                      NULL /* ev */);
                 DCHECK(rc, "Failed to declare object");
         }
 
@@ -316,7 +316,7 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
         else
                 flags = DAOS_OO_RO;
 
-        rc = dsr_obj_open(container, oid, epoch, flags, object, NULL /* ev */);
+        rc = daos_obj_open(container, oid, epoch, flags, object, NULL /* ev */);
         DCHECK(rc, "Failed to open object");
 }
 
@@ -324,7 +324,7 @@ static void ObjectClose(daos_handle_t object)
 {
         int rc;
 
-        rc = dsr_obj_close(object, NULL /* ev */);
+        rc = daos_obj_close(object, NULL /* ev */);
         DCHECK(rc, "Failed to close object");
 }
 
@@ -456,7 +456,7 @@ static void DAOS_Init(IOR_param_t *param)
         if (param->transferSize % param->daosRecordSize != 0)
                 ERR("'transferSize' must be a multiple of 'daosRecordSize'");
 
-        rc = dsr_init();
+        rc = daos_init();
         DCHECK(rc, "Failed to initialize daos");
 
         rc = daos_eq_create(&eventQueue);
@@ -479,9 +479,8 @@ static void DAOS_Init(IOR_param_t *param)
                 ranks.rl_nr.num_out = 0;
                 ranks.rl_ranks = &rank;
 
-                rc = dsr_pool_connect(uuid, NULL /* grp */, &ranks,
-                                      DAOS_PC_EX, NULL /* failed */, &pool,
-                                      &poolInfo, NULL /* ev */);
+                rc = daos_pool_connect(uuid, NULL /* grp */, &ranks, DAOS_PC_EX,
+                                       &pool, &poolInfo, NULL /* ev */);
                 DCHECK(rc, "Failed to connect to pool %s", param->daosPool);
         }
 
@@ -499,13 +498,13 @@ static void DAOS_Fini(IOR_param_t *param)
 {
         int rc;
 
-        rc = dsr_pool_disconnect(pool, NULL /* ev */);
+        rc = daos_pool_disconnect(pool, NULL /* ev */);
         DCHECK(rc, "Failed to disconnect from pool %s", param->daosPool);
 
         rc = daos_eq_destroy(eventQueue, 0 /* flags */);
         DCHECK(rc, "Failed to destroy event queue");
 
-        rc = dsr_fini();
+        rc = daos_fini();
         DCHECK(rc, "Failed to finalize daos");
 }
 
@@ -525,7 +524,7 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
 
         ContainerOpen(testFileName, param, &fd->container, &fd->containerInfo);
 
-        ghce = fd->containerInfo.ci_epoch_state.es_glb_hce;
+        ghce = fd->containerInfo.ci_epoch_state.es_ghce;
         if (param->open == WRITE) {
                 if (param->daosEpoch == 0)
                         fd->epoch = ghce + 1;
@@ -555,8 +554,8 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
 
                 INFO(VERBOSE_2, param, "Holding epoch %lu", fd->epoch);
 
-                rc = dsr_epoch_hold(fd->container, &fd->epoch,
-                                    NULL /* state */, NULL /* ev */);
+                rc = daos_epoch_hold(fd->container, &fd->epoch,
+                                     NULL /* state */, NULL /* ev */);
                 DCHECK(rc, "Failed to hold epoch");
                 assert(fd->epoch == e);
         }
@@ -616,14 +615,14 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
              (unsigned long long) aio->a_sgl.sg_iovs->iov_buf_len);
 
         if (access == WRITE) {
-                rc = dsr_obj_update(fd->object, fd->epoch, &aio->a_dkey,
-                                    1 /* nr */, &aio->a_iod, &aio->a_sgl,
-                                    &aio->a_event);
+                rc = daos_obj_update(fd->object, fd->epoch, &aio->a_dkey,
+                                     1 /* nr */, &aio->a_iod, &aio->a_sgl,
+                                     &aio->a_event);
                 DCHECK(rc, "Failed to start update operation");
         } else {
-                rc = dsr_obj_fetch(fd->object, fd->epoch, &aio->a_dkey,
-                                   1 /* nr */, &aio->a_iod, &aio->a_sgl,
-                                   NULL /* maps */, &aio->a_event);
+                rc = daos_obj_fetch(fd->object, fd->epoch, &aio->a_dkey,
+                                    1 /* nr */, &aio->a_iod, &aio->a_sgl,
+                                    NULL /* maps */, &aio->a_event);
                 DCHECK(rc, "Failed to start fetch operation");
         }
 
@@ -660,15 +659,15 @@ static void DAOS_Close(void *file, IOR_param_t *param)
                 if (rank == 0) {
                         INFO(VERBOSE_2, param, "Flushing epoch %lu", fd->epoch);
 
-                        rc = dsr_epoch_flush(fd->container, fd->epoch,
-                                             NULL /* state */, NULL /* ev */);
+                        rc = daos_epoch_flush(fd->container, fd->epoch,
+                                              NULL /* state */, NULL /* ev */);
                         DCHECK(rc, "Failed to flush epoch");
 
                         INFO(VERBOSE_2, param, "Committing epoch %lu",
                              fd->epoch);
 
-                        rc = dsr_epoch_commit(fd->container, fd->epoch,
-                                              NULL /* state */, NULL /* ev */);
+                        rc = daos_epoch_commit(fd->container, fd->epoch,
+                                               NULL /* state */, NULL /* ev */);
                         DCHECK(rc, "Failed to commit object write");
                 }
         }
@@ -688,7 +687,7 @@ static void DAOS_Delete(char *testFileName, IOR_param_t *param)
         rc = uuid_parse(testFileName, uuid);
         DCHECK(rc, "Failed to parse 'testFile': %s", testFileName);
 
-        rc = dsr_co_destroy(pool, uuid, 1 /* force */, NULL /* ev */);
+        rc = daos_cont_destroy(pool, uuid, 1 /* force */, NULL /* ev */);
         if (rc != -DER_NONEXIST)
                 DCHECK(rc, "Failed to destroy container %s", testFileName);
 }
