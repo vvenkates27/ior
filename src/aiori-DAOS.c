@@ -420,6 +420,8 @@ static void AIOWait(IOR_param_t *param)
         assert(rc <= param->daosAios - nAios);
 
         for (i = 0; i < rc; i++) {
+                int ret;
+
                 aio = (struct aio *)
                       ((char *) events[i] -
                        (char *) (&((struct aio *) 0)->a_event));
@@ -429,9 +431,9 @@ static void AIOWait(IOR_param_t *param)
                        aio->a_iod.vd_recxs->rx_nr);
 
                 daos_event_fini(&aio->a_event);
-                rc = daos_event_init(&aio->a_event, eventQueue,
+                ret = daos_event_init(&aio->a_event, eventQueue,
                                      NULL /* parent */);
-                DCHECK(rc, "Failed to reinitialize event for AIO %p", aio);
+                DCHECK(ret, "Failed to reinitialize event for AIO %p", aio);
 
                 cfs_list_move(&aio->a_list, &aios);
                 nAios++;
