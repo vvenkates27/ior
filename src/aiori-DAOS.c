@@ -97,9 +97,8 @@ static int                 nAios;
 static daos_handle_t       pool = DAOS_HDL_INVAL;
 static daos_pool_info_t    poolInfo;
 static daos_oclass_id_t    objectClass = DAOS_OC_LARGE_RW;
-
 static CFS_LIST_HEAD(aios);
-
+IOR_offset_t               total_size = 0;
 /***************************** F U N C T I O N S ******************************/
 
 #define DCHECK(rc, format, ...)                                         \
@@ -458,6 +457,9 @@ static void DAOS_Init(IOR_param_t *param)
         if (param->transferSize % param->daosRecordSize != 0)
                 ERR("'transferSize' must be a multiple of 'daosRecordSize'");
 
+        if (param->daosKill == 1)
+                objectClass = DAOS_OC_REPL_2_RW;
+
         rc = daos_init();
         DCHECK(rc, "Failed to initialize daos");
 
@@ -569,6 +571,61 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
         return fd;
 }
 
+static void
+kill_daos_server()
+{
+	daos_pool_info_t		info;
+	daos_rank_t			rank;
+	daos_rank_list_t		targets;
+	int				rc;
+
+	rc = daos_pool_query(pool, NULL, &info, NULL);
+	DCHECK(rc, "Error in querying pool\n");
+
+	if (info.pi_ndisabled == 0)
+		rank = 1;
+	else
+		rank = info.pi_ndisabled + 1;
+
+	printf("Killing target %d (total of %d of %d already disabled)\n",
+	       rank, info.pi_ntargets, info.pi_ndisabled);
+	fflush(stdout);
+
+	rc  = daos_mgmt_svc_rip(NULL, rank, true, NULL);
+	DCHECK(rc, "Error in killing server\n");
+
+	targets.rl_nr.num	= 1;
+	targets.rl_nr.num_out	= 0;
+	targets.rl_ranks	= &rank;
+	rc = daos_pool_exclude(pool, &targets, NULL);
+	DCHECK(rc, "Error in excluding pool from poolmap\n");
+
+        rc = daos_pool_query(pool, NULL, &info, NULL);
+	DCHECK(rc, "Error in querying pool\n");
+        printf("%d targets succesfully disabled\n",
+               info.pi_ndisabled);
+
+}
+
+static void
+kill_and_sync(IOR_param_t *param)
+{
+        double start, end;
+
+        start = MPI_Wtime();
+        if (rank == 0)
+                kill_daos_server();
+
+        MPI_CHECK(MPI_Barrier(param->testComm),
+                  "Failed to synchronize processes");
+        if (rank == 0)
+                printf("Done killing and excluding\n");
+
+        end = MPI_Wtime();
+        printf("Time spent inducing failure: %lf\n", (end - start));
+}
+
+
 static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
                               IOR_offset_t length, IOR_param_t *param)
 {
@@ -580,6 +637,21 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
 
         assert(length == param->transferSize);
         assert(param->offset % length == 0);
+        total_size += length;
+
+        /**
+         * Currently killing only during writes
+         * Kills once when 1/2 of blocksize is
+         * written
+         **/
+        if (param->daosKill && (access == WRITE) &&
+            ((param->blockSize)/2) == total_size) {
+                /** More than half written lets kill */
+                if (rank == 0)
+                        printf("Killing and Syncing\n", rank);
+                kill_and_sync(param);
+                param->daosKill = 0;
+        }
 
         /*
          * Find an available AIO descriptor.  If none, wait for one.

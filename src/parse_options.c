@@ -286,6 +286,8 @@ void DecodeDirective(char *line, IOR_param_t *params)
                 params->daosStripeSize = StringToBytes(value);
         } else if (strcasecmp(option, "daosstripecount") == 0) {
                 params->daosStripeCount = atoi(value);
+        } else if (strcasecmp(option, "daoskill") == 0) {
+                params->daosKill = 1;
         } else if (strcasecmp(option, "daosaios") == 0) {
                 params->daosAios = atoi(value);
         } else if (strcasecmp(option, "daosepoch") == 0) {

@@ -193,6 +193,7 @@ void init_IOR_Param_t(IOR_param_t * p)
         p->daosRecordSize = 262144;
         p->daosStripeSize = 524288;
         p->daosStripeCount = -1;
+        p->daosKill = 0;
         p->daosAios = 1;
 }
 
