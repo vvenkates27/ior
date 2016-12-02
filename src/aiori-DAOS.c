@@ -587,8 +587,8 @@ kill_daos_server()
 	else
 		rank = info.pi_ndisabled + 1;
 
-	printf("Killing target %d (total of %d of %d already disabled)\n",
-	       rank, info.pi_ntargets, info.pi_ndisabled);
+	printf("Killing tgt rank: %d (total of %d of %d already disabled)\n",
+	       rank,  info.pi_ndisabled, info.pi_ntargets);
 	fflush(stdout);
 
 	rc  = daos_mgmt_svc_rip(NULL, rank, true, NULL);
@@ -602,6 +602,7 @@ kill_daos_server()
 
         rc = daos_pool_query(pool, NULL, &info, NULL);
 	DCHECK(rc, "Error in querying pool\n");
+
         printf("%d targets succesfully disabled\n",
                info.pi_ndisabled);
 
@@ -616,13 +617,15 @@ kill_and_sync(IOR_param_t *param)
         if (rank == 0)
                 kill_daos_server();
 
-        MPI_CHECK(MPI_Barrier(param->testComm),
-                  "Failed to synchronize processes");
         if (rank == 0)
                 printf("Done killing and excluding\n");
 
+        MPI_CHECK(MPI_Barrier(param->testComm),
+                  "Failed to synchronize processes");
+
         end = MPI_Wtime();
-        printf("Time spent inducing failure: %lf\n", (end - start));
+        if (rank == 0)
+                printf("Time spent inducing failure: %lf\n", (end - start));
 }
 
 
