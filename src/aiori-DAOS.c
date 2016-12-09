@@ -98,9 +98,11 @@ static daos_handle_t       pool = DAOS_HDL_INVAL;
 static daos_pool_info_t    poolInfo;
 static daos_oclass_id_t    objectClass = DAOS_OC_LARGE_RW;
 static CFS_LIST_HEAD(aios);
-IOR_offset_t               total_size = 0;
+static IOR_offset_t        total_size;
+
 /***************************** F U N C T I O N S ******************************/
 
+/* For DAOS methods. */
 #define DCHECK(rc, format, ...)                                         \
 do {                                                                    \
         int _rc = (rc);                                                 \
@@ -117,7 +119,14 @@ do {                                                                    \
 #define INFO(level, param, format, ...)                                 \
 do {                                                                    \
         if (param->verbose >= level)                                    \
-                printf("[%d] "format"\n", rank, ##__VA_ARGS__);          \
+                printf("[%d] "format"\n", rank, ##__VA_ARGS__);         \
+} while (0)
+
+/* For generic errors like invalid command line options. */
+#define GERR(format, ...)                                               \
+do {                                                                    \
+        fprintf(stdout, format"\n", ##__VA_ARGS__);                     \
+        MPI_CHECK(MPI_Abort(MPI_COMM_WORLD, -1), "MPI_Abort() error");  \
 } while (0)
 
 /* Distribute process 0's pool or container handle to others. */
@@ -431,7 +440,7 @@ static void AIOWait(IOR_param_t *param)
 
                 daos_event_fini(&aio->a_event);
                 ret = daos_event_init(&aio->a_event, eventQueue,
-                                     NULL /* parent */);
+                                      NULL /* parent */);
                 DCHECK(ret, "Failed to reinitialize event for AIO %p", aio);
 
                 cfs_list_move(&aio->a_list, &aios);
@@ -446,19 +455,37 @@ static void AIOWait(IOR_param_t *param)
              nAios, param->daosAios - nAios);
 }
 
+static void ObjectClassParse(const char *string)
+{
+        if (strcasecmp(string, "tiny") == 0)
+                objectClass = DAOS_OC_TINY_RW;
+        else if (strcasecmp(string, "small") == 0)
+                objectClass = DAOS_OC_SMALL_RW;
+        else if (strcasecmp(string, "large") == 0)
+                objectClass = DAOS_OC_LARGE_RW;
+        else if (strcasecmp(string, "repl") == 0)
+                objectClass = DAOS_OC_REPL_2_RW;
+        else if (strcasecmp(string, "repl_max") == 0)
+                objectClass = DAOS_OC_REPL_MAX_RW;
+        else
+                GERR("Invalid 'daosObjectClass' argument: '%s'", string);
+}
+
 static void DAOS_Init(IOR_param_t *param)
 {
         int rc;
 
-        if (param->filePerProc)
-                ERR("'filePerProc' not yet supported");
-        if (param->daosStripeSize % param->transferSize != 0)
-                ERR("'daosStripeSize' must be a multiple of 'transferSize'");
-        if (param->transferSize % param->daosRecordSize != 0)
-                ERR("'transferSize' must be a multiple of 'daosRecordSize'");
+        if (strlen(param->daosObjectClass) != 0)
+                ObjectClassParse(param->daosObjectClass);
 
-        if (param->daosKill == 1)
-                objectClass = DAOS_OC_REPL_2_RW;
+        if (param->filePerProc)
+                GERR("'filePerProc' not yet supported");
+        if (param->daosStripeSize % param->transferSize != 0)
+                GERR("'daosStripeSize' must be a multiple of 'transferSize'");
+        if (param->transferSize % param->daosRecordSize != 0)
+                GERR("'transferSize' must be a multiple of 'daosRecordSize'");
+        if (param->daosKill && objectClass != DAOS_OC_REPL_2_RW)
+                GERR("'daosKill' only makes sense with 'daosObjectClass=repl'");
 
         rc = daos_init();
         DCHECK(rc, "Failed to initialize daos");
@@ -472,7 +499,7 @@ static void DAOS_Init(IOR_param_t *param)
                 daos_rank_list_t ranks;
 
                 if (strlen(param->daosPool) == 0)
-                        ERR("'daosPool' must be specified");
+                        GERR("'daosPool' must be specified");
 
                 INFO(VERBOSE_2, param, "Connecting to pool %s",
                      param->daosPool);
@@ -502,8 +529,18 @@ static void DAOS_Fini(IOR_param_t *param)
 {
         int rc;
 
-        rc = daos_pool_disconnect(pool, NULL /* ev */);
-        DCHECK(rc, "Failed to disconnect from pool %s", param->daosPool);
+        if (rank != 0) {
+                rc = daos_pool_disconnect(pool, NULL /* ev */);
+                DCHECK(rc, "Failed to disconnect from pool %s",
+                       param->daosPool);
+        }
+        MPI_CHECK(MPI_Barrier(param->testComm),
+                  "Failed to synchronize processes");
+        if (rank == 0) {
+                rc = daos_pool_disconnect(pool, NULL /* ev */);
+                DCHECK(rc, "Failed to disconnect from pool %s",
+                       param->daosPool);
+        }
 
         rc = daos_eq_destroy(eventQueue, 0 /* flags */);
         DCHECK(rc, "Failed to destroy event queue");
@@ -533,7 +570,7 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
                 if (param->daosEpoch == 0)
                         fd->epoch = ghce + 1;
                 else if (param->daosEpoch <= ghce)
-                        ERR("Can't modify committed epoch\n");
+                        GERR("Can't modify committed epoch\n");
                 else
                         fd->epoch = param->daosEpoch;
         } else {
@@ -543,7 +580,7 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
                         else
                                 fd->epoch = param->daosWait;
                 } else if (param->daosEpoch > ghce) {
-                        ERR("Can't read uncommitted epoch\n");
+                        GERR("Can't read uncommitted epoch\n");
                 } else {
                         fd->epoch = param->daosEpoch;
                 }
@@ -640,13 +677,13 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
 
         assert(length == param->transferSize);
         assert(param->offset % length == 0);
-        total_size += length;
 
         /**
          * Currently killing only during writes
          * Kills once when 1/2 of blocksize is
          * written
          **/
+        total_size += length;
         if (param->daosKill && (access == WRITE) &&
             ((param->blockSize)/2) == total_size) {
                 /** More than half written lets kill */

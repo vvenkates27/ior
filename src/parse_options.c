@@ -286,8 +286,6 @@ void DecodeDirective(char *line, IOR_param_t *params)
                 params->daosStripeSize = StringToBytes(value);
         } else if (strcasecmp(option, "daosstripecount") == 0) {
                 params->daosStripeCount = atoi(value);
-        } else if (strcasecmp(option, "daoskill") == 0) {
-                params->daosKill = 1;
         } else if (strcasecmp(option, "daosaios") == 0) {
                 params->daosAios = atoi(value);
         } else if (strcasecmp(option, "daosepoch") == 0) {
@@ -296,6 +294,10 @@ void DecodeDirective(char *line, IOR_param_t *params)
                 params->daosWait = atoi(value);
         } else if (strcasecmp(option, "daoswriteonly") == 0) {
                 params->daosWriteOnly = atoi(value);
+        } else if (strcasecmp(option, "daoskill") == 0) {
+                params->daosKill = atoi(value);
+        } else if (strcasecmp(option, "daosobjectclass") == 0) {
+                strcpy(params->daosObjectClass, value);
         } else {
                 if (rank == 0)
                         fprintf(stdout, "Unrecognized parameter \"%s\"\n",

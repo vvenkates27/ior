@@ -135,7 +135,8 @@ typedef struct
     int daosWriteOnly;               /* write only, no flush and commit */
     unsigned long daosEpoch;         /* epoch to access */
     unsigned long daosWait;          /* epoch to wait for before reading */
-    int           daosKill;         /* kill a target while running IOR */
+    int daosKill;                    /* kill a target while running IOR */
+    char daosObjectClass[MAX_STR];   /* object class */
 
     /* gpfs variables */
     int gpfs_hint_access;          /* use gpfs "access range" hint */
