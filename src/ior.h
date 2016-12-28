@@ -127,6 +127,7 @@ typedef struct
     int lustre_ignore_locks;
 
     /* DAOS variables */
+    char daosGroup[MAX_STR];         /* group name */
     char daosPool[37];               /* pool UUID */
     int daosRecordSize;              /* size of akey record (i.e., rx_rsize) */
     int daosStripeSize;

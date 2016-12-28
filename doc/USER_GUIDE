@@ -351,6 +351,8 @@ GPFS-SPECIFIC:
 
 DAOS-ONLY:
 ==========
+  * daosGroup            - group name [NULL]
+
   * daosPool             - UUID of the pool []
 
   * daosRecordSize       - size (in bytes) of an akey record [256k]
@@ -370,6 +372,12 @@ DAOS-ONLY:
                            NOTE: 0 denotes reading GHCE or writing GHCE + 1
 
   * daosWait             - epoch to wait when opening the container [0]
+
+  * daosKill             - kill a target in the middle of the test [0]
+                           NOTE: must also specify daosObjectClass=repl
+
+  * daosObjectClass      - object class (tiny, small, large, repl, repl_max)
+                           [large]
 
 ***********************
 * 5. VERBOSITY LEVELS *

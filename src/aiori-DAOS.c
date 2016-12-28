@@ -471,6 +471,13 @@ static void ObjectClassParse(const char *string)
                 GERR("Invalid 'daosObjectClass' argument: '%s'", string);
 }
 
+static const char *GetGroup(IOR_param_t *param)
+{
+        if (strlen(param->daosGroup) == 0)
+                return NULL;
+        return param->daosGroup;
+}
+
 static void DAOS_Init(IOR_param_t *param)
 {
         int rc;
@@ -510,8 +517,9 @@ static void DAOS_Init(IOR_param_t *param)
                 ranks.rl_nr.num_out = 0;
                 ranks.rl_ranks = &rank;
 
-                rc = daos_pool_connect(uuid, NULL /* grp */, &ranks, DAOS_PC_EX,
-                                       &pool, &poolInfo, NULL /* ev */);
+                rc = daos_pool_connect(uuid, GetGroup(param), &ranks,
+                                       DAOS_PC_EX, &pool, &poolInfo,
+                                       NULL /* ev */);
                 DCHECK(rc, "Failed to connect to pool %s", param->daosPool);
         }
 
@@ -609,7 +617,7 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
 }
 
 static void
-kill_daos_server()
+kill_daos_server(IOR_param_t *param)
 {
 	daos_pool_info_t		info;
 	daos_rank_t			rank;
@@ -628,7 +636,7 @@ kill_daos_server()
 	       rank,  info.pi_ndisabled, info.pi_ntargets);
 	fflush(stdout);
 
-	rc  = daos_mgmt_svc_rip(NULL, rank, true, NULL);
+	rc = daos_mgmt_svc_rip(GetGroup(param), rank, true, NULL);
 	DCHECK(rc, "Error in killing server\n");
 
 	targets.rl_nr.num	= 1;
@@ -652,7 +660,7 @@ kill_and_sync(IOR_param_t *param)
 
         start = MPI_Wtime();
         if (rank == 0)
-                kill_daos_server();
+                kill_daos_server(param);
 
         if (rank == 0)
                 printf("Done killing and excluding\n");

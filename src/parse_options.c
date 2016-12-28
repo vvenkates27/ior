@@ -278,6 +278,8 @@ void DecodeDirective(char *line, IOR_param_t *params)
 		RecalculateExpectedFileSize(params);
         } else if (strcasecmp(option, "summaryalways") == 0) {
                 params->summary_every_test = atoi(value);
+        } else if (strcasecmp(option, "daosgroup") == 0) {
+                strcpy(params->daosGroup, value);
         } else if (strcasecmp(option, "daospool") == 0) {
                 strcpy(params->daosPool, value);
         } else if (strcasecmp(option, "daosrecordsize") == 0) {
