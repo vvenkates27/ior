@@ -79,12 +79,12 @@ struct fileDescriptor {
 struct aio {
         cfs_list_t              a_list;
         char                    a_dkeyBuf[32];
-        daos_dkey_t             a_dkey;
+        daos_key_t              a_dkey;
         daos_recx_t             a_recx;
         unsigned char           a_csumBuf[32];
         daos_csum_buf_t         a_csum;
         daos_epoch_range_t      a_epochRange;
-        daos_vec_iod_t          a_iod;
+        daos_iod_t              a_iod;
         daos_iov_t              a_iov;
         daos_sg_list_t          a_sgl;
         struct daos_event       a_event;
@@ -306,6 +306,8 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
         oid.lo = 1;
         daos_obj_id_generate(&oid, objectClass);
 
+#if 0
+        /** declaring object not implemented commenting it */
         if (rank == 0 && param->open == WRITE &&
             param->useExistingTestFile == FALSE) {
                 INFO(VERBOSE_2, param, "Declaring object");
@@ -314,7 +316,7 @@ static void ObjectOpen(daos_handle_t container, daos_handle_t *object,
                                       NULL /* ev */);
                 DCHECK(rc, "Failed to declare object");
         }
-
+#endif
         /* An MPI_Bcast() call would probably be more efficient. */
         MPI_CHECK(MPI_Barrier(param->testComm),
                   "Failed to synchronize processes");
@@ -353,26 +355,28 @@ static void AIOInit(IOR_param_t *param)
 
                 memset(aio, 0, sizeof *aio);
 
-                aio->a_dkey.iov_buf = aio->a_dkeyBuf;
+                aio->a_dkey.iov_buf     = aio->a_dkeyBuf;
                 aio->a_dkey.iov_buf_len = sizeof aio->a_dkeyBuf;
 
-                aio->a_recx.rx_rsize = param->transferSize;
-                aio->a_recx.rx_nr = 1;
+                aio->a_recx.rx_nr       = 1;
 
-                aio->a_csum.cs_csum = &aio->a_csumBuf;
-                aio->a_csum.cs_buf_len = sizeof aio->a_csumBuf;
-                aio->a_csum.cs_len = aio->a_csum.cs_buf_len;
+                aio->a_csum.cs_csum     = &aio->a_csumBuf;
+                aio->a_csum.cs_buf_len  = sizeof aio->a_csumBuf;
+                aio->a_csum.cs_len      = aio->a_csum.cs_buf_len;
 
                 aio->a_epochRange.epr_hi = DAOS_EPOCH_MAX;
 
-                aio->a_iod.vd_name.iov_buf = "data";
-                aio->a_iod.vd_name.iov_buf_len =
-                        strlen(aio->a_iod.vd_name.iov_buf) + 1;
-                aio->a_iod.vd_name.iov_len = aio->a_iod.vd_name.iov_buf_len;
-                aio->a_iod.vd_nr = 1;
-                aio->a_iod.vd_recxs = &aio->a_recx;
-                aio->a_iod.vd_csums = &aio->a_csum;
-                aio->a_iod.vd_eprs = &aio->a_epochRange;
+                aio->a_iod.iod_name.iov_buf = "data";
+                aio->a_iod.iod_name.iov_buf_len =
+                        strlen(aio->a_iod.iod_name.iov_buf) + 1;
+                aio->a_iod.iod_name.iov_len = aio->a_iod.iod_name.iov_buf_len;
+                aio->a_iod.iod_nr = 1;
+                aio->a_iod.iod_type  = DAOS_IOD_ARRAY;
+                aio->a_iod.iod_recxs = &aio->a_recx;
+                aio->a_iod.iod_csums = &aio->a_csum;
+                aio->a_iod.iod_eprs  = &aio->a_epochRange;
+                aio->a_iod.iod_size  = param->transferSize;
+
 
                 aio->a_iov.iov_buf = buffers + param->transferSize * i;
                 aio->a_iov.iov_buf_len = param->transferSize;
@@ -435,8 +439,8 @@ static void AIOWait(IOR_param_t *param)
                        (char *) (&((struct aio *) 0)->a_event));
 
                 DCHECK(aio->a_event.ev_error, "Failed to transfer (%lu, %lu)",
-                       aio->a_iod.vd_recxs->rx_idx,
-                       aio->a_iod.vd_recxs->rx_nr);
+                       aio->a_iod.iod_recxs->rx_idx,
+                       aio->a_iod.iod_recxs->rx_nr);
 
                 daos_event_fini(&aio->a_event);
                 ret = daos_event_init(&aio->a_event, eventQueue,
@@ -731,8 +735,8 @@ static IOR_offset_t DAOS_Xfer(int access, void *file, IOR_size_t *buffer,
         INFO(VERBOSE_3, param, "Starting AIO %p (%d free %d busy): access %d "
              "dkey '%s' iod <%llu, %llu> sgl <%p, %lu>", aio, nAios,
              param->daosAios - nAios, access, (char *) aio->a_dkey.iov_buf,
-             (unsigned long long) aio->a_iod.vd_recxs->rx_idx,
-             (unsigned long long) aio->a_iod.vd_recxs->rx_nr,
+             (unsigned long long) aio->a_iod.iod_recxs->rx_idx,
+             (unsigned long long) aio->a_iod.iod_recxs->rx_nr,
              aio->a_sgl.sg_iovs->iov_buf,
              (unsigned long long) aio->a_sgl.sg_iovs->iov_buf_len);
 
