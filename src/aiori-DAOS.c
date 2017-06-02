@@ -522,7 +522,7 @@ static void DAOS_Init(IOR_param_t *param)
                 ranks.rl_ranks = &rank;
 
                 rc = daos_pool_connect(uuid, GetGroup(param), &ranks,
-                                       DAOS_PC_EX, &pool, &poolInfo,
+                                       DAOS_PC_RW, &pool, &poolInfo,
                                        NULL /* ev */);
                 DCHECK(rc, "Failed to connect to pool %s", param->daosPool);
         }
