@@ -282,6 +282,8 @@ void DecodeDirective(char *line, IOR_param_t *params)
                 strcpy(params->daosGroup, value);
         } else if (strcasecmp(option, "daospool") == 0) {
                 strcpy(params->daosPool, value);
+        } else if (strcasecmp(option, "daospoolsvc") == 0) {
+                strcpy(params->daosPoolSvc, value);
         } else if (strcasecmp(option, "daosrecordsize") == 0) {
                 params->daosRecordSize = StringToBytes(value);
         } else if (strcasecmp(option, "daosstripesize") == 0) {

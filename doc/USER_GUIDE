@@ -355,6 +355,8 @@ DAOS-ONLY:
 
   * daosPool             - UUID of the pool []
 
+  * daosPoolSvc          - pool service replica ranks (e.g., 1:2:3:4:5) []
+
   * daosRecordSize       - size (in bytes) of an akey record [256k]
                            NOTE: must divide transferSize
 
