@@ -645,10 +645,12 @@ static void *DAOS_Open(char *testFileName, IOR_param_t *param)
 static void
 kill_daos_server(IOR_param_t *param)
 {
-	daos_pool_info_t		info;
-	daos_rank_t			rank;
-	daos_rank_list_t		targets;
-	int				rc;
+	daos_pool_info_t        info;
+	daos_rank_t             rank, svc_ranks[13];
+	daos_rank_list_t        svc, targets;
+        uuid_t                  uuid;
+        char                    *s;
+        int                     rc;
 
 	rc = daos_pool_query(pool, NULL, &info, NULL);
 	DCHECK(rc, "Error in querying pool\n");
@@ -658,6 +660,10 @@ kill_daos_server(IOR_param_t *param)
 	else
 		rank = info.pi_ndisabled + 1;
 
+        rc = uuid_parse(param->daosPool, uuid);
+        DCHECK(rc, "Failed to parse 'daosPool': %s", param->daosPool);
+
+        if (rc != 0)
 	printf("Killing tgt rank: %d (total of %d of %d already disabled)\n",
 	       rank,  info.pi_ndisabled, info.pi_ntargets);
 	fflush(stdout);
@@ -668,7 +674,12 @@ kill_daos_server(IOR_param_t *param)
 	targets.rl_nr.num	= 1;
 	targets.rl_nr.num_out	= 0;
 	targets.rl_ranks	= &rank;
-	rc = daos_pool_exclude(pool, &targets, NULL);
+
+        s = strdup(param->daosPoolSvc);
+        svc.rl_ranks = svc_ranks;
+        ParseService(param, sizeof(rank)/ sizeof(svc_ranks[0]), &svc);
+
+	rc = daos_pool_exclude(uuid, NULL, &svc, &targets, NULL);
 	DCHECK(rc, "Error in excluding pool from poolmap\n");
 
         rc = daos_pool_query(pool, NULL, &info, NULL);
