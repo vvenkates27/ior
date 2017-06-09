@@ -129,6 +129,7 @@ typedef struct
     /* DAOS variables */
     char daosGroup[MAX_STR];         /* group name */
     char daosPool[37];               /* pool UUID */
+    char daosPoolSvc[MAX_STR];       /* pool service ranks */
     int daosRecordSize;              /* size of akey record (i.e., rx_rsize) */
     int daosStripeSize;
     unsigned long daosStripeCount;

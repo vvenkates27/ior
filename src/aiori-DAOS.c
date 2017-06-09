@@ -482,6 +482,27 @@ static const char *GetGroup(IOR_param_t *param)
         return param->daosGroup;
 }
 
+static void ParseService(IOR_param_t *param, int max, daos_rank_list_t *ranks)
+{
+        char *s;
+
+        s = strdup(param->daosPoolSvc);
+        if (s == NULL)
+                GERR("failed to duplicate argument");
+        ranks->rl_nr.num = 0;
+        while ((s = strtok(s, ":")) != NULL) {
+                if (ranks->rl_nr.num >= max) {
+                        free(s);
+                        GERR("at most %d pool service replicas supported", max);
+                }
+                ranks->rl_ranks[ranks->rl_nr.num] = atoi(s);
+                ranks->rl_nr.num++;
+                s = NULL;
+        }
+        ranks->rl_nr.num_out = ranks->rl_nr.num;
+        free(s);
+}
+
 static void DAOS_Init(IOR_param_t *param)
 {
         int rc;
@@ -506,23 +527,24 @@ static void DAOS_Init(IOR_param_t *param)
 
         if (rank == 0) {
                 uuid_t           uuid;
-                daos_rank_t      rank = 0;
+                daos_rank_t      rank[13];
                 daos_rank_list_t ranks;
 
                 if (strlen(param->daosPool) == 0)
                         GERR("'daosPool' must be specified");
+                if (strlen(param->daosPoolSvc) == 0)
+                        GERR("'daosPoolSvc' must be specified");
 
-                INFO(VERBOSE_2, param, "Connecting to pool %s",
-                     param->daosPool);
+                INFO(VERBOSE_2, param, "Connecting to pool %s %s",
+                     param->daosPool, param->daosPoolSvc);
 
                 rc = uuid_parse(param->daosPool, uuid);
                 DCHECK(rc, "Failed to parse 'daosPool': %s", param->daosPool);
-                ranks.rl_nr.num = 1;
-                ranks.rl_nr.num_out = 0;
-                ranks.rl_ranks = &rank;
+                ranks.rl_ranks = rank;
+                ParseService(param, sizeof(rank) / sizeof(rank[0]), &ranks);
 
                 rc = daos_pool_connect(uuid, GetGroup(param), &ranks,
-                                       DAOS_PC_EX, &pool, &poolInfo,
+                                       DAOS_PC_RW, &pool, &poolInfo,
                                        NULL /* ev */);
                 DCHECK(rc, "Failed to connect to pool %s", param->daosPool);
         }
