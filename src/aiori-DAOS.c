@@ -467,12 +467,18 @@ static void ObjectClassParse(const char *string)
                 objectClass = DAOS_OC_SMALL_RW;
         else if (strcasecmp(string, "large") == 0)
                 objectClass = DAOS_OC_LARGE_RW;
-        else if (strcasecmp(string, "repl_2") == 0)
-                objectClass = DAOS_OC_REPL_2_RW;
-        else if (strcasecmp(string, "repl_3") == 0)
+        else if (strcasecmp(string, "R2") == 0)
+                objectClass = DAOS_OC_R2_RW;
+        else if (strcasecmp(string, "R2S") == 0)
+                objectClass = DAOS_OC_R2S_RW;
+        else if (strcasecmp(string, "R3S") == 0)
+                objectClass = DAOS_OC_R3S_RW;
+        else if (strcasecmp(string, "R3") == 0)
                 objectClass = DAOS_OC_R3_RW;
-        else if (strcasecmp(string, "repl_4") == 0)
+        else if (strcasecmp(string, "R4") == 0)
                 objectClass = DAOS_OC_R4_RW;
+        else if (strcasecmp(string, "R4S") == 0)
+                objectClass = DAOS_OC_R4S_RW;
         else if (strcasecmp(string, "repl_max") == 0)
                 objectClass = DAOS_OC_REPL_MAX_RW;
         else
@@ -520,9 +526,12 @@ static void DAOS_Init(IOR_param_t *param)
                 GERR("'daosStripeSize' must be a multiple of 'transferSize'");
         if (param->transferSize % param->daosRecordSize != 0)
                 GERR("'transferSize' must be a multiple of 'daosRecordSize'");
-        if (param->daosKill && ((objectClass != DAOS_OC_REPL_2_RW) ||
+        if (param->daosKill && ((objectClass != DAOS_OC_R2_RW) ||
                                 (objectClass != DAOS_OC_R3_RW) ||
                                 (objectClass != DAOS_OC_R4_RW) ||
+                                (objectClass != DAOS_OC_R2S_RW) ||
+                                (objectClass != DAOS_OC_R3S_RW) ||
+                                (objectClass != DAOS_OC_R4S_RW) ||
                                 (objectClass != DAOS_OC_REPL_MAX_RW)))
                 GERR("'daosKill' only makes sense with 'daosObjectClass=repl'");
 
