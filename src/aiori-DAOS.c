@@ -467,8 +467,12 @@ static void ObjectClassParse(const char *string)
                 objectClass = DAOS_OC_SMALL_RW;
         else if (strcasecmp(string, "large") == 0)
                 objectClass = DAOS_OC_LARGE_RW;
-        else if (strcasecmp(string, "repl") == 0)
+        else if (strcasecmp(string, "repl_2") == 0)
                 objectClass = DAOS_OC_REPL_2_RW;
+        else if (strcasecmp(string, "repl_3") == 0)
+                objectClass = DAOS_OC_R3_RW;
+        else if (strcasecmp(string, "repl_4") == 0)
+                objectClass = DAOS_OC_R4_RW;
         else if (strcasecmp(string, "repl_max") == 0)
                 objectClass = DAOS_OC_REPL_MAX_RW;
         else
@@ -516,7 +520,10 @@ static void DAOS_Init(IOR_param_t *param)
                 GERR("'daosStripeSize' must be a multiple of 'transferSize'");
         if (param->transferSize % param->daosRecordSize != 0)
                 GERR("'transferSize' must be a multiple of 'daosRecordSize'");
-        if (param->daosKill && objectClass != DAOS_OC_REPL_2_RW)
+        if (param->daosKill && ((objectClass != DAOS_OC_REPL_2_RW) ||
+                                (objectClass != DAOS_OC_R3_RW) ||
+                                (objectClass != DAOS_OC_R4_RW) ||
+                                (objectClass != DAOS_OC_REPL_MAX_RW)))
                 GERR("'daosKill' only makes sense with 'daosObjectClass=repl'");
 
         rc = daos_init();
@@ -655,10 +662,10 @@ kill_daos_server(IOR_param_t *param)
 	rc = daos_pool_query(pool, NULL, &info, NULL);
 	DCHECK(rc, "Error in querying pool\n");
 
-	if (info.pi_ndisabled == 0)
-		rank = 1;
-	else
-		rank = info.pi_ndisabled + 1;
+	if (info.pi_ntargets - info.pi_ndisabled <= 1)
+		return;
+	/* choose the last alive one */
+	rank = info.pi_ntargets - 1 - info.pi_ndisabled;
 
         rc = uuid_parse(param->daosPool, uuid);
         DCHECK(rc, "Failed to parse 'daosPool': %s", param->daosPool);
@@ -675,9 +682,8 @@ kill_daos_server(IOR_param_t *param)
 	targets.rl_nr.num_out	= 0;
 	targets.rl_ranks	= &rank;
 
-        s = strdup(param->daosPoolSvc);
         svc.rl_ranks = svc_ranks;
-        ParseService(param, sizeof(rank)/ sizeof(svc_ranks[0]), &svc);
+        ParseService(param, sizeof(svc_ranks)/ sizeof(svc_ranks[0]), &svc);
 
 	rc = daos_pool_exclude(uuid, NULL, &svc, &targets, NULL);
 	DCHECK(rc, "Error in excluding pool from poolmap\n");
