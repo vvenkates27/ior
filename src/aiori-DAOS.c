@@ -839,6 +839,7 @@ static void DAOS_Close(void *file, IOR_param_t *param)
 static void DAOS_Delete(char *testFileName, IOR_param_t *param)
 {
         uuid_t uuid;
+        double start,end;
         int    rc;
 
         INFO(VERBOSE_2, param, "Deleting container %s", testFileName);
@@ -846,9 +847,23 @@ static void DAOS_Delete(char *testFileName, IOR_param_t *param)
         rc = uuid_parse(testFileName, uuid);
         DCHECK(rc, "Failed to parse 'testFile': %s", testFileName);
 
-        rc = daos_cont_destroy(pool, uuid, 1 /* force */, NULL /* ev */);
+        start = MPI_Wtime();
+        do {
+                 rc = daos_cont_destroy(pool, uuid, 1 /* force */,
+                                        NULL /* ev */);
+                 if (rc == -DER_IO || rc == -DER_BUSY) {
+                        sleep(1);
+                        continue;
+                 } else {
+        /*                fprintf(stdout, "Cont destroy error: %d\n", rc); */
+                        break;
+                 }
+        } while(1);
+        end = MPI_Wtime();
+
         if (rc != -DER_NONEXIST)
-                DCHECK(rc, "Failed to destroy container %s", testFileName);
+                DCHECK(rc,
+                       "Failed to destroy container %s", testFileName);
 }
 
 static void DAOS_SetVersion(IOR_param_t *test)
