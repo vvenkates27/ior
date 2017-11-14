@@ -492,7 +492,7 @@ static const char *GetGroup(IOR_param_t *param)
         return param->daosGroup;
 }
 
-static void ParseService(IOR_param_t *param, int max, daos_rank_list_t *ranks)
+static void ParseService(IOR_param_t *param, int max, d_rank_list_t *ranks)
 {
         char *s;
 
@@ -543,8 +543,8 @@ static void DAOS_Init(IOR_param_t *param)
 
         if (rank == 0) {
                 uuid_t           uuid;
-                daos_rank_t      rank[13];
-                daos_rank_list_t ranks;
+                d_rank_t         rank[13];
+                d_rank_list_t    ranks;
 
                 if (strlen(param->daosPool) == 0)
                         GERR("'daosPool' must be specified");
@@ -662,8 +662,8 @@ static void
 kill_daos_server(IOR_param_t *param)
 {
 	daos_pool_info_t        info;
-	daos_rank_t             rank, svc_ranks[13];
-	daos_rank_list_t        svc, targets;
+	d_rank_t                rank, svc_ranks[13];
+	d_rank_list_t           svc, targets;
         uuid_t                  uuid;
         char                    *s;
         int                     rc;
