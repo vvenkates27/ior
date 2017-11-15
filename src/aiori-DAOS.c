@@ -467,6 +467,8 @@ static void ObjectClassParse(const char *string)
                 objectClass = DAOS_OC_SMALL_RW;
         else if (strcasecmp(string, "large") == 0)
                 objectClass = DAOS_OC_LARGE_RW;
+        else if (strcasecmp(string, "echo") == 0)
+                objectClass = DAOS_OC_ECHO_RW;
         else if (strcasecmp(string, "R2") == 0)
                 objectClass = DAOS_OC_R2_RW;
         else if (strcasecmp(string, "R2S") == 0)
